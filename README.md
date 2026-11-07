@@ -1,3 +1,11 @@
+# Performance Console 3.0.6: Redis connection diagnostics
+
+This diagnostic follow-up addresses an unresolved result in 3.0.5 where the WordPress cache API was fast but the separate PhpRedis connection failed. The direct probe now supports common `WP_REDIS_CONFIG`, `OBJECTCACHE_CONFIG` and legacy `WP_REDIS_*` settings, including ACL credentials, Redis URLs, TLS and Unix sockets. It identifies the failed stage (connect, authentication, selected database, PING or commands) while never revealing Redis credentials, raw errors or endpoint details. Complex multi-server topologies are explicitly marked unsupported instead of being tested incorrectly.
+
+The on-demand benchmark remains read-only with respect to WordPress options, using only unique expiring Redis keys. The results are a short diagnostic sample, not a measurement of cumulative per-request cache cost. The installed WordPress cache configuration, command permissions and live request traces must still be checked for the original 80–100 ms metric.
+
+---
+
 # Performance Console 3.0.5 (candidate)
 
 ## On-demand Cache & Redis diagnostics
