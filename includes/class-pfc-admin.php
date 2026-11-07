@@ -5,6 +5,7 @@ final class PFC_Admin {
     public static function init() {
         add_action( 'admin_menu', array( __CLASS__, 'menu' ) );
         add_action( 'admin_post_pfc_scan', array( __CLASS__, 'scan_post' ) );
+        add_action( 'admin_post_pfc_cache_diagnose', array( __CLASS__, 'cache_diagnose_post' ) );
         add_action( 'admin_post_pfc_bootstrap', array( __CLASS__, 'bootstrap_post' ) );
         add_action( 'admin_post_pfc_expired_transients', array( __CLASS__, 'expired_transients' ) );
         add_action( 'admin_post_pfc_db_fix', array( __CLASS__, 'database_fix_post' ) );
@@ -74,6 +75,16 @@ final class PFC_Admin {
         $deep = ! empty( $_POST['deep'] );
         PFC_Scanner::scan( $deep, false );
         wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=' . ( $deep ? 'database' : 'overview' ) . '&scanned=1&mode=' . ( $deep ? 'deep' : 'safe' ) . ( $deep ? '#database' : '#overview' ) ) ); exit;
+    }
+
+    /** Explicit, nonce-protected diagnostic. No Redis benchmark on normal traffic. */
+    public static function cache_diagnose_post() {
+        self::cap();
+        check_admin_referer( 'pfc_cache_diagnose' );
+        $result = PFC_Cache_Diagnostics::run();
+        set_transient( 'pfc_cache_diagnostic_' . get_current_user_id(), $result, 15 * MINUTE_IN_SECONDS );
+        wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=cache#cache-diagnostics' ) );
+        exit;
     }
 
     public static function bootstrap_post() {
@@ -353,7 +364,7 @@ final class PFC_Admin {
 
     public static function page() {
         self::cap(); global $wpdb;
-        $allowed_views = array( 'overview', 'findings', 'database', 'profiling', 'monitoring', 'system' );
+        $allowed_views = array( 'overview', 'findings', 'database', 'profiling', 'monitoring', 'system', 'cache' );
         $active_view = sanitize_key( wp_unslash( $_GET['view'] ?? 'overview' ) );
         if ( ! in_array( $active_view, $allowed_views, true ) ) { $active_view = 'overview'; }
         // Version-checked: a report cached by an older release is discarded rather
@@ -399,6 +410,7 @@ final class PFC_Admin {
         $runtime = get_option( 'pfc_runtime', array( 'sample_rate' => 0.0002, 'rum_rate' => 0.005, 'retention_days' => 30 ) );
         $active_plugins = 'profiling' === $active_view ? array_filter( PFC_Scanner::plugins(), static function ( $p ) { return ! empty( $p['active'] ); } ) : array();
         $bootstrap_status = 'overview' === $active_view ? PFC_Bootstrap::status() : array();
+        $cache_diagnostic = 'cache' === $active_view ? get_transient( 'pfc_cache_diagnostic_' . get_current_user_id() ) : false;
         $incident_notice = get_transient( 'pfc_incident_notice_' . get_current_user_id() );
         if ( false !== $incident_notice ) { delete_transient( 'pfc_incident_notice_' . get_current_user_id() ); }
         ?>
@@ -411,7 +423,7 @@ final class PFC_Admin {
             </div>
         </header>
         <nav class="pfc-suite-nav" aria-label="<?php esc_attr_e( 'Performance Console sections', 'performance-console' ); ?>">
-            <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
+            <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ), 'cache' => array( 'dashicons-performance', __( 'Cache & Redis', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=' . $view_slug ) . '#' . $view_slug ); ?>" data-pfc-tab="<?php echo esc_attr( $view_slug ); ?>"<?php echo $active_view === $view_slug ? ' aria-current="page"' : ''; ?>><span class="dashicons <?php echo esc_attr( $view_meta[0] ); ?>" aria-hidden="true"></span><?php echo esc_html( $view_meta[1] ); ?><?php if ( 'findings' === $view_slug ): ?> <span class="pfc-nav-count"><?php echo esc_html( $open_issue_total > 999 ? '999+' : (string) $open_issue_total ); ?></span><?php endif; ?></a>
             <?php endforeach; ?>
         </nav>
@@ -746,6 +758,54 @@ final class PFC_Admin {
             </article>
         <?php endforeach; ?>
         </div>
+        </section>
+        <?php endif; ?>
+
+        <?php if ( 'cache' === $active_view ): ?>
+        <section class="pfc-view" data-pfc-view="cache" id="pfc-view-cache">
+            <div class="pfc-view-heading"><h2>Cache & Redis diagnostics</h2><p>Measure cache API overhead, direct Redis command timings where supported, and autoloaded options. This is an explicit on-demand test, not background profiling.</p></div>
+            <div class="pfc-box" id="cache-diagnostics">
+                <form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                    <input type="hidden" name="action" value="pfc_cache_diagnose">
+                    <?php wp_nonce_field( 'pfc_cache_diagnose' ); ?>
+                    <button type="submit" class="button button-primary">Run Redis &amp; Autoload Diagnostics</button>
+                </form>
+                <p class="description">Runs up to 12 small cache probes in each layer, writes only short-lived diagnostic keys, and reads the largest 15 autoloaded option names and sizes. A direct Redis test uses a separate temporary PhpRedis connection if the extension and supported constants are present. No credentials or option contents are displayed.</p>
+            </div>
+            <?php if ( ! $cache_diagnostic ): ?>
+                <div class="pfc-empty">No recent diagnostic report. Run the test above to identify whether Redis itself or WordPress object-cache processing is slower.</div>
+            <?php else:
+                $d = (array) $cache_diagnostic;
+                $api = (array) ( $d['object_cache'] ?? array() );
+                $redis = (array) ( $d['redis'] ?? array() );
+                $auto = (array) ( $d['autoload'] ?? array() );
+                $cfg = (array) ( $d['configuration'] ?? array() );
+            ?>
+                <div class="pfc-box">
+                    <h3>Measurements</h3>
+                    <p>Recorded <?php echo esc_html( (string) ( $d['at'] ?? '' ) ); ?>. Persistent cache: <strong><?php echo ! empty( $d['persistent'] ) ? 'active' : 'not detected'; ?></strong>. Provider: <?php echo esc_html( (string) ( $cfg['provider'] ?? 'unknown' ) ); ?>. Persistent connections: <?php echo ! isset( $cfg['persistent_connection'] ) ? 'unknown' : ( $cfg['persistent_connection'] ? 'enabled' : 'disabled' ); ?>.</p>
+                    <p><strong>Direct Redis:</strong> <?php echo 'ok' === ( $redis['status'] ?? '' ) ? 'connected' : esc_html( (string) ( $redis['reason'] ?? 'unavailable' ) ); ?>
+                    <?php if ( 'ok' === ( $redis['status'] ?? '' ) ): ?>
+                        <span>Connect: <?php echo esc_html( (string) $redis['connection_ms'] ); ?> ms, PING: <?php echo esc_html( (string) $redis['ping_ms'] ); ?> ms.</span>
+                    <?php endif; ?></p>
+                    <table class="widefat striped"><thead><tr><th>Layer</th><th>Operation</th><th>Samples</th><th>Median</th><th>p95</th><th>Maximum</th></tr></thead><tbody>
+                    <?php foreach ( array( 'WordPress cache API' => $api, 'Direct Redis' => $redis ) as $layer => $series ):
+                        foreach ( array( 'set', 'get', 'delete' ) as $op ):
+                            $stat = (array) ( $series[ $op ] ?? array() ); ?>
+                        <tr><td><?php echo esc_html( $layer ); ?></td><td><?php echo esc_html( strtoupper( $op ) ); ?></td><td><?php echo intval( $stat['n'] ?? 0 ); ?></td><td><?php echo isset( $stat['median_ms'] ) ? esc_html( (string) $stat['median_ms'] ) . ' ms' : 'n/a'; ?></td><td><?php echo isset( $stat['p95_ms'] ) ? esc_html( (string) $stat['p95_ms'] ) . ' ms' : 'n/a'; ?></td><td><?php echo isset( $stat['max_ms'] ) ? esc_html( (string) $stat['max_ms'] ) . ' ms' : 'n/a'; ?></td></tr>
+                        <?php endforeach; endforeach; ?></tbody></table>
+                    <p class="description">WordPress API timings include PHP and the drop-in and may hit an in-process cache. Direct Redis timings measure separate Redis commands. These are not total page-request timings; p95 from 12 samples is only a quick indicator, not a production latency percentile.</p>
+                    <?php if ( ! empty( $api['failed'] ) || ! empty( $redis['failed'] ) ): ?><p class="pfc-critical">Verification failures: WordPress <?php echo intval( $api['failed'] ?? 0 ); ?>, direct Redis <?php echo intval( $redis['failed'] ?? 0 ); ?>.</p><?php endif; ?>
+                    <?php if ( ! empty( $redis['server_counters'] ) ): ?><details><summary>Redis server counters (snapshot, not per-request costs)</summary><ul><?php foreach ( (array) $redis['server_counters'] as $name => $value ): ?><li><?php echo esc_html( $name ); ?>: <?php echo esc_html( (string) $value ); ?></li><?php endforeach; ?></ul></details><?php endif; ?>
+                </div>
+                <div class="pfc-box"><h3>Autoloaded WordPress options</h3>
+                    <p><?php echo esc_html( size_format( (int) ( $auto['bytes'] ?? 0 ) ) ); ?> in <?php echo intval( $auto['count'] ?? 0 ); ?> options. Read-only evidence: do not disable autoload without checking the plugin that owns the option.</p>
+                    <table class="widefat striped"><thead><tr><th>Option</th><th>Size</th><th>Autoload flag</th></tr></thead><tbody>
+                    <?php foreach ( (array) ( $auto['largest'] ?? array() ) as $option ): ?><tr><td><code><?php echo esc_html( (string) ( $option['option_name'] ?? '' ) ); ?></code></td><td><?php echo esc_html( size_format( (int) ( $option['bytes'] ?? 0 ) ) ); ?></td><td><?php echo esc_html( (string) ( $option['autoload'] ?? '' ) ); ?></td></tr><?php endforeach; ?>
+                    </tbody></table>
+                </div>
+                <div class="pfc-box"><h3>Recommended next checks</h3><ul><?php foreach ( (array) ( $d['recommendations'] ?? array() ) as $advice ): ?><li><?php echo esc_html( (string) $advice ); ?></li><?php endforeach; ?></ul><p><a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=profiling#profiling' ) ); ?>">Profile a representative uncached page request</a> to examine the remaining 80–100 ms request budget.</p></div>
+            <?php endif; ?>
         </section>
         <?php endif; ?>
 
