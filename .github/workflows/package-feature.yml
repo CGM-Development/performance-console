@@ -1,8 +1,8 @@
-name: Package Performance Console 3.0.5 (installable)
+name: Package Performance Console 3.0.6 (installable)
 on:
   push:
     branches:
-      - feature/redis-autoload-diagnostics-3.0.5
+      - feature/redis-autoload-diagnostics-3.0.6
   workflow_dispatch:
 permissions:
   contents: read
@@ -34,7 +34,7 @@ jobs:
       - name: Upload installable plugin ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: performance-console-3.0.5-installable
+          name: performance-console-3.0.6-installable
           path: build/
           if-no-files-found: error
           retention-days: 30
