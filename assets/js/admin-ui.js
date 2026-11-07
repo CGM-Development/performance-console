@@ -4,7 +4,7 @@
     if (!root) { return; }
 
     var legacyView = (window.location.hash || '').replace(/^#/, '');
-    var allowedViews = ['overview', 'findings', 'database', 'profiling', 'monitoring', 'system'];
+    var allowedViews = ['overview', 'findings', 'database', 'profiling', 'monitoring', 'system', 'cache'];
     var activeView = root.getAttribute('data-active-view') || 'overview';
     if (allowedViews.indexOf(legacyView) !== -1 && legacyView !== activeView) {
         var legacyUrl = new URL(window.location.href);

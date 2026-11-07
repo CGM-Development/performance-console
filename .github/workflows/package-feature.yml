@@ -1,0 +1,40 @@
+name: Package Performance Console 3.0.6 (installable)
+on:
+  push:
+    branches:
+      - feature/redis-autoload-diagnostics-3.0.6
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          tools: none
+      - name: Check PHP syntax
+        run: |
+          find includes mu-plugin -name '*.php' -print0 | xargs -0 -n1 php -l
+          php -l performance-console.php
+          php -l uninstall.php
+      - name: Make WordPress plugin package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/performance-console
+          cp performance-console.php uninstall.php readme.txt build/performance-console/
+          cp -R includes assets mu-plugin build/performance-console/
+          printf "Packaged commit %s\n" "$GITHUB_SHA"
+          test -f build/performance-console/includes/class-pfc-cache-diagnostics.php
+          test -f build/performance-console/assets/js/admin-ui.js
+      - name: Upload installable plugin ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-console-3.0.6-installable
+          path: build/
+          if-no-files-found: error
+          retention-days: 30

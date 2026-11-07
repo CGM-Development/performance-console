@@ -1,3 +1,25 @@
+# Performance Console 3.0.6: Redis connection diagnostics
+
+This diagnostic follow-up addresses an unresolved result in 3.0.5 where the WordPress cache API was fast but the separate PhpRedis connection failed. The direct probe now supports common `WP_REDIS_CONFIG`, `OBJECTCACHE_CONFIG` and legacy `WP_REDIS_*` settings, including ACL credentials, Redis URLs, TLS and Unix sockets. It identifies the failed stage (connect, authentication, selected database, PING or commands) while never revealing Redis credentials, raw errors or endpoint details. Complex multi-server topologies are explicitly marked unsupported instead of being tested incorrectly.
+
+The on-demand benchmark remains read-only with respect to WordPress options, using only unique expiring Redis keys. The results are a short diagnostic sample, not a measurement of cumulative per-request cache cost. The installed WordPress cache configuration, command permissions and live request traces must still be checked for the original 80–100 ms metric.
+
+---
+
+# Performance Console 3.0.5 (candidate)
+
+## On-demand Cache & Redis diagnostics
+
+The **Cache & Redis** admin tab now offers a nonce-protected, administrator-only **Run Redis & Autoload Diagnostics** action. Unlike the normal production-safe scan, this action performs a bounded set of 12 temporary-key WordPress object-cache probes (SET/GET/DELETE) and, when PhpRedis and supported host constants are present, independent Redis command probes on a separate, short-timeout connection. It also records connection and PING timing and a subset of Redis server counters when available. The direct probe is read/write only to unique short-lived diagnostic keys; it never flushes a database or changes Redis settings.
+
+The report separates WordPress cache API timings (which may be satisfied by the local in-process cache) from direct Redis timings, then lists total autoload size and the 15 largest autoloaded option names. It recommends follow-up checks but does not change autoload flags or delete data. Results stay in a per-admin, 15-minute transient. Redis passwords, hostnames, values, raw errors and option contents are not displayed.
+
+**WP-CLI:** `wp performance cache-diagnose` returns the same report as JSON.
+
+**Limitations:** 12 samples are directional, not full production percentiles; timings do not represent whole-request 80–100 ms cost, and command benchmarks do not measure real WordPress object payloads, serialization or connection setup in every request. If direct PhpRedis access cannot authenticate, the report says it is unavailable rather than treating the WordPress API timing as raw Redis latency. Benchmark after deployments and on a representative production environment. Do not enable persistent connections or change autoload behaviour without staged validation.
+
+---
+
 # Performance Console 3.0.4
 
 ## 3.0.4 audit fixes
