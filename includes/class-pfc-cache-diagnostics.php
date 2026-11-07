@@ -28,12 +28,102 @@ final class PFC_Cache_Diagnostics {
         return $result;
     }
 
-    private static function configuration() {
-        $host = defined( 'XSPEED_OC_HOST' ) ? (string) XSPEED_OC_HOST : ( defined( 'WP_REDIS_HOST' ) ? (string) WP_REDIS_HOST : '' );
+
+    /**
+     * Resolve common Redis drop-in settings without ever adding credentials or
+     * connection strings to a report. Does not guess endpoints.
+     */
+    private static function connection_settings() {
+        $config = array();
+        $provider = 'unidentified';
+        if ( defined( 'XSPEED_OC_BACKEND' ) ) {
+            $provider = 'xSpeed';
+        } elseif ( defined( 'OBJECTCACHE_CONFIG' ) && is_array( OBJECTCACHE_CONFIG ) ) {
+            $provider = 'OBJECTCACHE_CONFIG';
+            $config = OBJECTCACHE_CONFIG;
+        } elseif ( defined( 'WP_REDIS_CONFIG' ) && is_array( WP_REDIS_CONFIG ) ) {
+            $provider = 'WP_REDIS_CONFIG';
+            $config = WP_REDIS_CONFIG;
+        } elseif ( defined( 'WP_REDIS_HOST' ) ) {
+            $provider = 'WP_REDIS constants';
+        }
+
+        // A single raw connection cannot accurately represent a clustered
+        // or sentinel-backed WordPress cache. Skip rather than misdiagnose it.
+        $topology = 'single';
+        if ( ! empty( $config['cluster'] ) || ! empty( $config['clusters'] ) || ! empty( $config['servers'] ) || ! empty( $config['sentinels'] ) || ! empty( $config['replication'] ) ||
+            ( defined( 'WP_REDIS_CLUSTER' ) && WP_REDIS_CLUSTER ) ||
+            ( defined( 'WP_REDIS_SERVERS' ) && WP_REDIS_SERVERS ) ) {
+            $topology = 'complex';
+        }
+
+        $host = (string) ( $config['path'] ?? $config['socket'] ?? $config['host'] ?? '' );
+        $scheme = strtolower( (string) ( $config['scheme'] ?? ( defined( 'WP_REDIS_SCHEME' ) ? WP_REDIS_SCHEME : 'tcp' ) ) );
+        $port = (int) ( $config['port'] ?? ( defined( 'XSPEED_OC_PORT' ) ? XSPEED_OC_PORT : ( defined( 'WP_REDIS_PORT' ) ? WP_REDIS_PORT : 6379 ) ) );
+        $db = (int) ( $config['database'] ?? ( defined( 'XSPEED_OC_DATABASE' ) ? XSPEED_OC_DATABASE : ( defined( 'WP_REDIS_DATABASE' ) ? WP_REDIS_DATABASE : 0 ) ) );
+        $password = $config['password'] ?? ( defined( 'XSPEED_OC_PASSWORD' ) ? XSPEED_OC_PASSWORD : ( defined( 'WP_REDIS_PASSWORD' ) ? WP_REDIS_PASSWORD : null ) );
+        $username = $config['username'] ?? ( defined( 'XSPEED_OC_USERNAME' ) ? XSPEED_OC_USERNAME : ( defined( 'WP_REDIS_USERNAME' ) ? WP_REDIS_USERNAME : null ) );
+
+        if ( isset( $config['url'] ) && is_string( $config['url'] ) && '' !== $config['url'] ) {
+            $parsed = parse_url( $config['url'] );
+            if ( is_array( $parsed ) ) {
+                $scheme = strtolower( (string) ( $parsed['scheme'] ?? $scheme ) );
+                if ( ! empty( $parsed['host'] ) ) { $host = (string) $parsed['host']; }
+                if ( isset( $parsed['port'] ) ) { $port = (int) $parsed['port']; }
+                if ( isset( $parsed['user'] ) ) { $username = rawurldecode( $parsed['user'] ); }
+                if ( isset( $parsed['pass'] ) ) { $password = rawurldecode( $parsed['pass'] ); }
+                if ( ! empty( $parsed['path'] ) && preg_match( '~^/\\d+$~', $parsed['path'] ) ) {
+                    $db = (int) substr( $parsed['path'], 1 );
+                }
+                if ( ! empty( $parsed['query'] ) ) {
+                    $query = array();
+                    parse_str( $parsed['query'], $query );
+                    if ( isset( $query['database'] ) && is_numeric( $query['database'] ) ) { $db = (int) $query['database']; }
+                }
+            }
+        }
+        if ( '' === $host ) {
+            $host = defined( 'XSPEED_OC_HOST' ) ? (string) XSPEED_OC_HOST : ( defined( 'WP_REDIS_HOST' ) ? (string) WP_REDIS_HOST : '' );
+        }
+        if ( '' === $host && defined( 'WP_REDIS_PATH' ) ) { $host = (string) WP_REDIS_PATH; }
+
+        if ( preg_match( '~^(tcp|redis|tls|rediss)://~i', $host, $parts ) ) {
+            $scheme = strtolower( $parts[1] );
+            $host = preg_replace( '~^(tcp|redis|tls|rediss)://~i', '', $host );
+        }
+        if ( 'unix' === $scheme || ( '' !== $host && '/' === substr( $host, 0, 1 ) ) ) {
+            $scheme = 'unix';
+            $port = 0;
+        } elseif ( in_array( $scheme, array( 'rediss', 'tls' ), true ) ) {
+            $scheme = 'tls';
+            if ( '' !== $host ) { $host = 'tls://' . $host; }
+        } else {
+            $scheme = 'tcp';
+        }
+        $persistent = $config['persistent'] ?? ( defined( 'XSPEED_OC_PERSISTENT' ) ? XSPEED_OC_PERSISTENT : ( defined( 'WP_REDIS_PERSISTENT' ) ? WP_REDIS_PERSISTENT : null ) );
+        $host_display = preg_replace( '~^tls://~', '', $host );
         return array(
-            'provider' => defined( 'XSPEED_OC_BACKEND' ) ? 'xSpeed' : ( defined( 'WP_REDIS_HOST' ) ? 'WP_REDIS' : 'unidentified' ),
-            'local_host' => '' !== $host ? in_array( strtolower( $host ), array( '127.0.0.1', 'localhost', '::1' ), true ) : null,
-            'persistent_connection' => defined( 'XSPEED_OC_PERSISTENT' ) ? (bool) XSPEED_OC_PERSISTENT : ( defined( 'WP_REDIS_PERSISTENT' ) ? (bool) WP_REDIS_PERSISTENT : null ),
+            'provider' => $provider,
+            'topology' => $topology,
+            'transport' => $scheme,
+            'host' => $host,
+            'port' => $port,
+            'database' => max( 0, $db ),
+            'username' => $username,
+            'password' => $password,
+            'local_host' => in_array( strtolower( $host_display ), array( 'localhost', '127.0.0.1', '::1' ), true ),
+            'persistent' => null === $persistent ? null : (bool) $persistent,
+        );
+    }
+
+    private static function configuration() {
+        $s = self::connection_settings();
+        return array(
+            'provider' => $s['provider'],
+            'transport' => $s['transport'],
+            'topology' => $s['topology'],
+            'local_host' => $s['local_host'],
+            'persistent_connection' => $s['persistent'],
             'phpredis_available' => class_exists( 'Redis' ),
         );
     }
@@ -69,34 +159,40 @@ final class PFC_Cache_Diagnostics {
         );
     }
 
+
+    /** Raw Redis benchmark using the detected standalone connection configuration. */
     private static function benchmark_redis( $started ) {
         if ( ! class_exists( 'Redis' ) ) {
-            return array( 'status' => 'unavailable', 'reason' => 'The PhpRedis extension is not installed. WordPress API measurements remain available.' );
+            return array( 'status' => 'unavailable', 'stage' => 'client', 'reason' => 'PhpRedis is unavailable, so a direct command comparison cannot be made.' );
         }
-        $host = defined( 'XSPEED_OC_HOST' ) ? (string) XSPEED_OC_HOST : ( defined( 'WP_REDIS_HOST' ) ? (string) WP_REDIS_HOST : '' );
-        if ( '' === $host ) {
-            return array( 'status' => 'unavailable', 'reason' => 'No supported Redis host constant was found. No guessed connection was attempted.' );
+        $s = self::connection_settings();
+        if ( 'complex' === $s['topology'] ) {
+            return array( 'status' => 'unavailable', 'stage' => 'topology', 'reason' => 'Redis clustering, replication or Sentinel was detected; a single direct connection would be misleading.' );
         }
-        $port = defined( 'XSPEED_OC_PORT' ) ? (int) XSPEED_OC_PORT : ( defined( 'WP_REDIS_PORT' ) ? (int) WP_REDIS_PORT : 6379 );
-        $database = defined( 'XSPEED_OC_DATABASE' ) ? (int) XSPEED_OC_DATABASE : ( defined( 'WP_REDIS_DATABASE' ) ? (int) WP_REDIS_DATABASE : 0 );
-        $password = defined( 'XSPEED_OC_PASSWORD' ) ? XSPEED_OC_PASSWORD : ( defined( 'WP_REDIS_PASSWORD' ) ? WP_REDIS_PASSWORD : null );
-        $username = defined( 'XSPEED_OC_USERNAME' ) ? XSPEED_OC_USERNAME : ( defined( 'WP_REDIS_USERNAME' ) ? WP_REDIS_USERNAME : null );
+        if ( '' === $s['host'] ) {
+            return array( 'status' => 'unavailable', 'stage' => 'configuration', 'reason' => 'No supported standalone Redis endpoint was found in the WordPress configuration.' );
+        }
         $connection = new Redis();
+        $stage = 'connect';
         try {
             $t = microtime( true );
-            if ( ! $connection->connect( $host, $port, 0.5 ) ) { throw new RuntimeException( 'connection' ); }
+            if ( ! $connection->connect( $s['host'], $s['port'], 0.5 ) ) { throw new RuntimeException( 'connect' ); }
             if ( defined( 'Redis::OPT_READ_TIMEOUT' ) ) { $connection->setOption( Redis::OPT_READ_TIMEOUT, 0.5 ); }
             $connect_ms = ( microtime( true ) - $t ) * 1000;
-            if ( null !== $password && '' !== $password ) {
-                $auth = $username ? array( (string) $username, (string) $password ) : $password;
-                if ( ! $connection->auth( $auth ) ) { throw new RuntimeException( 'authentication' ); }
+            $stage = 'auth';
+            if ( null !== $s['password'] && '' !== $s['password'] ) {
+                $auth = $s['username'] ? array( (string) $s['username'], (string) $s['password'] ) : $s['password'];
+                if ( ! $connection->auth( $auth ) ) { throw new RuntimeException( 'auth' ); }
             }
-            if ( 0 !== $database && ! $connection->select( $database ) ) { throw new RuntimeException( 'database' ); }
+            $stage = 'database';
+            if ( 0 !== $s['database'] && ! $connection->select( $s['database'] ) ) { throw new RuntimeException( 'select' ); }
+            $stage = 'ping';
             $t = microtime( true );
             $connection->ping();
             $ping_ms = ( microtime( true ) - $t ) * 1000;
             $samples = array( 'set' => array(), 'get' => array(), 'delete' => array() );
             $failures = 0;
+            $stage = 'commands';
             for ( $i = 0; $i < self::SAMPLE_COUNT && microtime( true ) - $started < self::MAX_SECONDS; $i++ ) {
                 $key = 'pfc:diagnostic:' . wp_generate_uuid4();
                 $value = 'probe-' . wp_generate_uuid4();
@@ -123,12 +219,19 @@ final class PFC_Cache_Diagnostics {
             return array(
                 'status' => 'ok', 'connection_ms' => round( $connect_ms, 3 ), 'ping_ms' => round( $ping_ms, 3 ),
                 'samples' => count( $samples['get'] ), 'failed' => $failures,
-                'set' => self::summary( $samples['set'] ), 'get' => self::summary( $samples['get'] ), 'delete' => self::summary( $samples['delete'] ),
-                'server_counters' => $info,
+                'set' => self::summary( $samples['set'] ), 'get' => self::summary( $samples['get'] ),
+                'delete' => self::summary( $samples['delete'] ), 'server_counters' => $info,
             );
         } catch ( Throwable $ignored ) {
-            // Never expose exception content, hostnames, passwords or socket paths.
-            return array( 'status' => 'unavailable', 'reason' => 'Direct Redis probe could not connect or authenticate. Check the drop-in configuration and PhpRedis ACLs.' );
+            // No raw Redis exception text, credentials, or endpoint details are returned.
+            $safe_reasons = array(
+                'connect' => 'Redis endpoint could not be reached using the detected transport.',
+                'auth' => 'Redis authentication failed. Check the authentication configuration or ACL username.',
+                'database' => 'The configured Redis database could not be selected.',
+                'ping' => 'Redis refused PING. Verify that authentication is complete and the ACL permits this command.',
+                'commands' => 'The direct temporary-key commands failed or were blocked by the Redis ACL.',
+            );
+            return array( 'status' => 'unavailable', 'stage' => $stage, 'reason' => $safe_reasons[ $stage ] ?? 'Redis request failed.' );
         } finally {
             try { $connection->close(); } catch ( Throwable $ignored ) {}
         }
