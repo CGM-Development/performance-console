@@ -393,4 +393,136 @@ final class PFC_CLI {
             WP_CLI\Utils\format_items( 'table', $report['footprint']['components'], array( 'type','slug','files','bytes' ) );
         }
     }
+
+    /** Audit one page for render-blocking assets and priority hints. ## OPTIONS <url> [--json] */
+    public function assets( $args, $assoc ) {
+        if ( ! isset( $args[0] ) ) { WP_CLI::error( 'Usage: wp performance assets <url>' ); }
+        $report = PFC_Asset_Ledger::inspect( $args[0] );
+        if ( is_wp_error( $report ) ) { WP_CLI::error( $report->get_error_message() ); }
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( $report, JSON_PRETTY_PRINT ) ); return; }
+        if ( empty( $report['findings'] ) ) { WP_CLI::success( 'No asset findings on ' . $report['url'] . '.' ); return; }
+        WP_CLI\Utils\format_items( 'table', $report['findings'], array( 'severity','title','evidence' ) );
+        WP_CLI::success( count( $report['findings'] ) . ' finding(s); heuristic estimate ' . $report['estimate_ms_total'] . ' ms in total.' );
+    }
+
+    /** Show which elements carry LCP and INP in the field. ## OPTIONS [--days=<n>] [--json] */
+    public function attribution( $args, $assoc ) {
+        $report = PFC_Attribution::report( (int) ( $assoc['days'] ?? 7 ) );
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( $report, JSON_PRETTY_PRINT ) ); return; }
+        if ( empty( $report['available'] ) ) { WP_CLI::success( 'No attributed RUM samples yet.' ); return; }
+        WP_CLI\Utils\format_items( 'table', $report['lcp_elements'], array( 'tag','samples','share','avg_kb','max_kb' ) );
+        if ( ! empty( $report['inp_targets'] ) ) { WP_CLI\Utils\format_items( 'table', $report['inp_targets'], array( 'tag','samples','share' ) ); }
+        if ( ! empty( $report['long_tasks']['events'] ) ) {
+            WP_CLI::log( 'Long tasks: ' . $report['long_tasks']['events'] . ' events, worst ' . $report['long_tasks']['max_ms'] . ' ms, average ' . $report['long_tasks']['average_ms'] . ' ms.' );
+        }
+    }
+
+    /** List index candidates and never-used indexes. ## OPTIONS [--json] */
+    public function indexes( $args, $assoc ) {
+        $candidates = PFC_Index_Repair::candidates( 10 );
+        $usage = PFC_Index_Repair::usage( 20 );
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( compact( 'candidates', 'usage' ), JSON_PRETTY_PRINT ) ); return; }
+        if ( $candidates ) {
+            WP_CLI::log( 'Index candidates from the last deep profile:' );
+            WP_CLI\Utils\format_items( 'table', $candidates, array( 'table','sql' ) );
+        } else {
+            WP_CLI::log( 'No single-table index candidate was generated.' );
+        }
+        if ( empty( $usage['available'] ) ) {
+            WP_CLI::warning( (string) ( $usage['message'] ?? 'Index usage is unavailable.' ) );
+            return;
+        }
+        if ( ! empty( $usage['warning'] ) ) { WP_CLI::warning( $usage['warning'] ); }
+        if ( empty( $usage['rows'] ) ) { WP_CLI::log( 'Every index has been used since the server started.' ); return; }
+        WP_CLI\Utils\format_items( 'table', $usage['rows'], array( 'table_name','index_name' ) );
+    }
+
+    /** Create a reviewed index behind the safety gates. ## OPTIONS <table> <columns> --backup-confirmed [--force-large] [--force-engine] */
+    public function index_create( $args, $assoc ) {
+        if ( ! isset( $args[0], $args[1] ) ) { WP_CLI::error( 'Usage: wp performance index-create <table> <columns> --backup-confirmed' ); }
+        $columns = array_filter( array_map( 'trim', explode( ',', (string) $args[1] ) ) );
+        $result = PFC_Index_Repair::create( (string) $args[0], $columns, array(
+            'backup_confirmed' => ! empty( $assoc['backup-confirmed'] ),
+            'force_large'      => ! empty( $assoc['force-large'] ),
+            'force_engine'     => ! empty( $assoc['force-engine'] ),
+        ) );
+        if ( is_wp_error( $result ) ) { WP_CLI::error( $result->get_error_message() ); }
+        WP_CLI::log( $result['sql'] );
+        WP_CLI::success( $result['message'] );
+    }
+
+    /** Drop an index that Performance Console created. ## OPTIONS <change-id> */
+    public function index_undo( $args ) {
+        if ( ! isset( $args[0] ) ) { WP_CLI::error( 'Usage: wp performance index-undo <change-id>' ); }
+        $result = PFC_Index_Repair::undo( (int) $args[0] );
+        if ( is_wp_error( $result ) ) { WP_CLI::error( $result->get_error_message() ); }
+        WP_CLI::success( $result['message'] );
+    }
+
+    /** List duplicate and short-interval WP-Cron hooks. ## OPTIONS [--json] */
+    public function cron( $args, $assoc ) {
+        $report = PFC_Cron_Repair::snapshot();
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( $report, JSON_PRETTY_PRINT ) ); return; }
+        $rows = array();
+        foreach ( (array) $report['hooks'] as $row ) {
+            if ( empty( $row['multiple_timestamps'] ) && empty( $row['short_interval'] ) ) { continue; }
+            $rows[] = array(
+                'hook'    => $row['hook'],
+                'events'  => $row['events'],
+                'dupe'    => ! empty( $row['multiple_timestamps'] ) ? 'yes' : 'no',
+                'short'   => ! empty( $row['short_interval'] ) ? 'yes' : 'no',
+                'gap'     => (int) $row['min_gap'] > 0 ? $row['min_gap'] . 's' : '—',
+                'protected' => ! empty( $row['protected'] ) ? 'yes' : 'no',
+            );
+        }
+        if ( ! $rows ) { WP_CLI::success( 'No duplicate or short-interval cron hooks found.' ); return; }
+        WP_CLI\Utils\format_items( 'table', $rows, array( 'hook','events','dupe','short','gap','protected' ) );
+        WP_CLI::warning( $report['duplicate_hooks'] . ' hook(s) scheduled more than once, ' . $report['short_interval_hooks'] . ' with a sub-' . $report['short_interval'] . 's interval.' );
+    }
+
+    /** Collapse duplicate occurrences of one cron hook, keeping the earliest. ## OPTIONS <hook> --confirm */
+    public function cron_dedupe( $args, $assoc ) {
+        if ( ! isset( $args[0] ) ) { WP_CLI::error( 'Usage: wp performance cron-dedupe <hook> --confirm' ); }
+        $result = PFC_Cron_Repair::dedupe( (string) $args[0], ! empty( $assoc['confirm'] ) );
+        if ( is_wp_error( $result ) ) { WP_CLI::error( $result->get_error_message() ); }
+        WP_CLI::success( $result['message'] );
+    }
+
+    /** Report the autoload budget and its largest offenders. ## OPTIONS [--limit=<n>] [--json] */
+    public function autoload( $args, $assoc ) {
+        $summary = PFC_Autoload_Budget::summary();
+        $offenders = PFC_Autoload_Budget::offenders( (int) ( $assoc['limit'] ?? 20 ) );
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( compact( 'summary', 'offenders' ), JSON_PRETTY_PRINT ) ); return; }
+        WP_CLI::log( 'Autoloaded: ' . $summary['count'] . ' options, ' . size_format( $summary['bytes'] ) . ' of a ' . size_format( $summary['budget_bytes'] ) . ' budget (' . $summary['bytes_ratio'] . 'x).' );
+        if ( $summary['over_bytes'] || $summary['over_count'] ) { WP_CLI::warning( 'The autoload footprint is over budget.' ); }
+        if ( $offenders ) { WP_CLI\Utils\format_items( 'table', $offenders, array( 'option_name','bytes','hits','evidence','protected' ) ); }
+    }
+
+    /** Stop autoloading an explicit list of options. ## OPTIONS <options> --confirm */
+    public function autoload_off( $args, $assoc ) {
+        if ( ! isset( $args[0] ) ) { WP_CLI::error( 'Usage: wp performance autoload-off option_one,option_two --confirm' ); }
+        $names = array_filter( array_map( 'trim', explode( ',', (string) $args[0] ) ) );
+        $result = PFC_Autoload_Budget::disable( $names, ! empty( $assoc['confirm'] ) );
+        if ( is_wp_error( $result ) ) { WP_CLI::error( $result->get_error_message() ); }
+        if ( ! empty( $result['skipped'] ) ) { WP_CLI::warning( 'Skipped: ' . implode( ', ', $result['skipped'] ) ); }
+        WP_CLI::success( $result['message'] );
+    }
+
+    /** Show or change the reversible Heartbeat and revision levers. ## OPTIONS [--heartbeat=<seconds>] [--no-heartbeat] [--revisions=<n>] [--no-revisions] --confirm */
+    public function levers( $args, $assoc ) {
+        $state = PFC_Runtime_Levers::state();
+        $changing = isset( $assoc['heartbeat'] ) || isset( $assoc['no-heartbeat'] ) || isset( $assoc['revisions'] ) || isset( $assoc['no-revisions'] );
+        if ( ! $changing ) {
+            foreach ( PFC_Runtime_Levers::describe( $state ) as $line ) { WP_CLI::log( $line ); }
+            WP_CLI::log( wp_json_encode( $state, JSON_PRETTY_PRINT ) );
+            return;
+        }
+        if ( isset( $assoc['no-heartbeat'] ) ) { $state['heartbeat']['enabled'] = false; }
+        if ( isset( $assoc['heartbeat'] ) ) { $state['heartbeat']['enabled'] = true; $state['heartbeat']['interval'] = (int) $assoc['heartbeat']; }
+        if ( isset( $assoc['no-revisions'] ) ) { $state['revisions']['enabled'] = false; }
+        if ( isset( $assoc['revisions'] ) ) { $state['revisions']['enabled'] = true; $state['revisions']['keep'] = (int) $assoc['revisions']; }
+        $result = PFC_Runtime_Levers::save( $state, ! empty( $assoc['confirm'] ) );
+        if ( is_wp_error( $result ) ) { WP_CLI::error( $result->get_error_message() ); }
+        WP_CLI::success( $result['message'] );
+    }
 }

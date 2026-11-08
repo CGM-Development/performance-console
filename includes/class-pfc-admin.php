@@ -561,7 +561,7 @@ final class PFC_Admin {
 
     public static function page() {
         self::cap(); global $wpdb;
-        $allowed_views = array( 'overview', 'findings', 'database', 'profiling', 'monitoring', 'system', 'cache' );
+        $allowed_views = array( 'overview', 'findings', 'database', 'profiling', 'monitoring', 'system', 'optimize', 'cache' );
         $active_view = sanitize_key( wp_unslash( $_GET['view'] ?? 'overview' ) );
         if ( ! in_array( $active_view, $allowed_views, true ) ) { $active_view = 'overview'; }
         // Version-checked: a report cached by an older release is discarded rather
@@ -624,10 +624,13 @@ final class PFC_Admin {
             </div>
         </header>
         <nav class="pfc-suite-nav" aria-label="<?php esc_attr_e( 'Performance Console sections', 'performance-console' ); ?>">
-            <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ), 'cache' => array( 'dashicons-performance', __( 'Cache & Redis', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
+            <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ), 'optimize' => array( 'dashicons-superhero', __( 'Optimize', 'performance-console' ) ), 'cache' => array( 'dashicons-performance', __( 'Cache & Redis', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=' . $view_slug ) . '#' . $view_slug ); ?>" data-pfc-tab="<?php echo esc_attr( $view_slug ); ?>"<?php echo $active_view === $view_slug ? ' aria-current="page"' : ''; ?>><span class="dashicons <?php echo esc_attr( $view_meta[0] ); ?>" aria-hidden="true"></span><?php echo esc_html( $view_meta[1] ); ?><?php if ( 'findings' === $view_slug ): ?> <span class="pfc-nav-count"><?php echo esc_html( $open_issue_total > 999 ? '999+' : (string) $open_issue_total ); ?></span><?php endif; ?></a>
             <?php endforeach; ?>
         </nav>
+        <?php if ( 'optimize' === $active_view ): ?>
+        <?php PFC_Optimize::render(); ?>
+        <?php endif; ?>
         <?php if ( 'overview' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="overview" id="pfc-view-overview">
         <div class="pfc-view-heading"><h2>Performance health</h2><p>Scan the site, work through confirmed root-cause incidents, and verify each change against the same evidence.</p></div>

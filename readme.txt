@@ -4,7 +4,7 @@ Tags: performance, database, query, profiler, diagnostics, slow queries
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.1.12
+Stable tag: 3.2.0
 License: GPLv2 or later
 
 Production-oriented WordPress diagnostics and remediation with database integrity/schema checks, slow-query attribution, plugin fault analysis, cron/cache/server inspection, RUM and production safety gates.
@@ -29,6 +29,12 @@ Deep signed route profiles provide normalized query fingerprints, duplicate/N+1 
 6. Create and verify a Performance Console database backup before schema/index/repair operations. Large maintenance operations can be run from the guided wp-admin workflow or WP-CLI; CLI remains preferable for the largest tables.
 
 == Changelog ==
+
+= 3.2.0 =
+* Optimization suite: a change-impact ledger that compares traffic before and after each recorded change, field attribution for LCP elements / INP targets / long tasks, an asset and priority-hint ledger, performance budgets with a CI gate, a bootstrap waterfall and a cacheability advisor.
+* Guarded remediation beyond the database: index creation from existing candidates (verified, online DDL, reversible), never-used index evidence, opt-in Heartbeat and revision levers, WP-Cron de-duplication and an autoload budget. Every action is recorded and reversible.
+* New `pfc_attribution` table (schema 3.1.0) stores bounded LCP/INP element evidence. No URLs, selectors, class names or text leave the browser. MU bootstrap remains 2.8.0.
+* New **Optimize** screen and WP-CLI commands: `changes`, `budget`, `cacheability`, `boot`, `assets`, `attribution`, `indexes`, `index-create`, `index-undo`, `cron`, `cron-dedupe`, `autoload`, `autoload-off`, `levers`.
 
 = 3.1.12 =
 * Native Key Tracking: classify a single administrator-supplied error line in-memory; store and export only fixed categories and explicitly identified command enums. The text is immediately discarded.
