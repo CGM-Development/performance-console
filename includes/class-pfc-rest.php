@@ -224,7 +224,13 @@ final class PFC_REST {
             $sql = "INSERT INTO {$table} (bucket,metric,route_hash,route_group,metric_version,samples,value_sum,value_max,{$bucket_column}) VALUES (%s,%s,%s,%s,%d,1,%f,%f,1) ON DUPLICATE KEY UPDATE route_group=VALUES(route_group),samples=samples+1,value_sum=value_sum+VALUES(value_sum),value_max=GREATEST(value_max,VALUES(value_max)),{$bucket_column}={$bucket_column}+1";
             $wpdb->query( $wpdb->prepare( $sql, $bucket, $metric, $hash, $route_group, $metric_version, $value, $value ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
-        return rest_ensure_response( array( 'ok' => true, 'stored' => count( $values ) ) );
+        // Attribution is optional: older clients, and visits where the entry had
+        // no element, simply omit it. Its own sanitiser decides what is stored.
+        $attribution_rows = 0;
+        if ( isset( $m['attribution'] ) && is_array( $m['attribution'] ) ) {
+            $attribution_rows = PFC_Attribution::store( $route_group, (array) $m['attribution'] );
+        }
+        return rest_ensure_response( array( 'ok' => true, 'stored' => count( $values ), 'attribution' => $attribution_rows ) );
     }
 
     private static function valid_rum_token( array $payload ) {

@@ -2,7 +2,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class PFC_DB {
-    const DB_VERSION = '3.0.0';
+    const DB_VERSION = '3.1.0';
     const LEGACY_TABLE_SUFFIXES = array( 'runs', 'queries', 'issues', 'metrics', 'changes', 'option_usage', 'backups' );
     const LEGACY_OPTION_PATTERNS = array( 'wpi\_%', '\_transient\_wpi\_%', '\_transient\_timeout\_wpi\_%' );
     const LEGACY_CRON_HOOK = 'wpi_daily_maintenance';
@@ -144,6 +144,7 @@ final class PFC_DB {
         $changes = PFC_Utils::table( 'changes' );
         $option_usage = PFC_Utils::table( 'option_usage' );
         $backups = PFC_Utils::table( 'backups' );
+        $attribution = PFC_Utils::table( 'attribution' );
 
         dbDelta( "CREATE TABLE {$runs} (
             id bigint unsigned NOT NULL AUTO_INCREMENT,
@@ -282,6 +283,23 @@ final class PFC_DB {
             KEY created_at (created_at),
             KEY verified_at (verified_at)
         ) {$charset};" );
+
+        // Field-metric attribution: bounded categorical evidence about which
+        // element or resource was the LCP candidate, what received the INP
+        // interaction, and how many long tasks a visit observed.
+        dbDelta( "CREATE TABLE {$attribution} (
+            id bigint unsigned NOT NULL AUTO_INCREMENT,
+            bucket datetime NOT NULL,
+            metric varchar(24) NOT NULL,
+            route_group varchar(80) NOT NULL DEFAULT '',
+            label varchar(24) NOT NULL DEFAULT '',
+            samples bigint unsigned NOT NULL DEFAULT 0,
+            value_sum bigint unsigned NOT NULL DEFAULT 0,
+            value_max bigint unsigned NOT NULL DEFAULT 0,
+            PRIMARY KEY  (id),
+            UNIQUE KEY uniq_attribution (bucket,metric,route_group,label),
+            KEY bucket (bucket)
+        ) {$charset};" );
         if ( false === get_option( 'pfc_usage_started_at', false ) ) {
             add_option( 'pfc_usage_started_at', time(), '', false );
         }
@@ -334,5 +352,8 @@ final class PFC_DB {
         $changes = PFC_Utils::table( 'changes' );
         $changes_cut = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS * $days );
         $wpdb->query( $wpdb->prepare( "DELETE FROM {$changes} WHERE created_at < %s LIMIT 5000", $changes_cut ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+        $attribution = PFC_Utils::table( 'attribution' );
+        $wpdb->query( $wpdb->prepare( "DELETE FROM {$attribution} WHERE bucket < %s LIMIT 5000", $metrics_cut ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
     }
 }

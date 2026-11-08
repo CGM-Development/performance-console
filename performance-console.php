@@ -24,6 +24,8 @@ require_once PFC_DIR . 'includes/class-pfc-bootstrap.php';
 require_once PFC_DIR . 'includes/class-pfc-change-impact.php';
 require_once PFC_DIR . 'includes/class-pfc-budget.php';
 require_once PFC_DIR . 'includes/class-pfc-cacheability.php';
+require_once PFC_DIR . 'includes/class-pfc-asset-ledger.php';
+require_once PFC_DIR . 'includes/class-pfc-attribution.php';
 require_once PFC_DIR . 'includes/class-pfc-bootstrap-timeline.php';
 require_once PFC_DIR . 'includes/class-pfc-sql-inspector.php';
 require_once PFC_DIR . 'includes/class-pfc-http-inspector.php';

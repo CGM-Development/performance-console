@@ -23,7 +23,7 @@ if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $wp
     $pfc_backup_paths = array_merge( $pfc_backup_paths, (array) $wpdb->get_col( "SELECT file_path FROM `{$wpi_backups_table}` WHERE file_path <> ''" ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 }
 
-foreach ( array( 'runs', 'queries', 'issues', 'metrics', 'changes', 'option_usage', 'backups' ) as $pfc_suffix ) {
+foreach ( array( 'runs', 'queries', 'issues', 'metrics', 'changes', 'option_usage', 'backups', 'attribution' ) as $pfc_suffix ) {
     $wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}pfc_{$pfc_suffix}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
     $wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}wpi_{$pfc_suffix}`" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 }

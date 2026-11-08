@@ -20,6 +20,8 @@ require_once dirname( __DIR__ ) . '/includes/class-pfc-bootstrap.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-change-impact.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-budget.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-cacheability.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-asset-ledger.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-attribution.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-bootstrap-timeline.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-database-health.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-database-repair.php';
@@ -384,6 +386,98 @@ test_case( 'bootstrap footprint groups includes by component', static function (
     assert_same( 2, $by_slug['alpha']['files'] );
     assert_same( 1, $by_slug['sampletheme']['files'] );
     assert_same( 'static_includes', $footprint['measured'] );
+} );
+
+test_case( 'asset ledger parses resources and resolves relative URLs', static function (): void {
+    $html = '<!doctype html><html><head>'
+        . '<link rel="stylesheet" href="/wp-content/themes/t/style.css">'
+        . '<link rel="stylesheet" href="/print.css" media="print">'
+        . '<link rel="stylesheet" href="https://cdn.example.net/a.css">'
+        . '<link rel="preconnect" href="https://fonts.gstatic.com">'
+        . '<script src="/wp-includes/js/jquery.js"></script>'
+        . '<script src="/deferred.js" defer></script>'
+        . '<style>.a{color:red}</style>'
+        . '</head><body>'
+        . '<img src="/hero.jpg" loading="lazy">'
+        . '<img src="img/thumb.jpg" width="300" height="200" srcset="/thumb-300.jpg 300w">'
+        . '<script>var x = 1;</script>'
+        . '</body></html>';
+    $parsed = PFC_Asset_Ledger::parse( $html, 'https://example.test/2026/11/story/' );
+    assert_same( 3, count( $parsed['stylesheets'] ) );
+    assert_same( true, $parsed['stylesheets'][0]['blocking'] );
+    assert_same( false, $parsed['stylesheets'][1]['blocking'] );
+    assert_same( 'third-party', $parsed['stylesheets'][2]['origin'] );
+    assert_same( 2, count( $parsed['scripts'] ) );
+    assert_same( true, $parsed['scripts'][0]['blocking'] );
+    assert_same( false, $parsed['scripts'][1]['blocking'] );
+    assert_same( 2, count( $parsed['images'] ) );
+    assert_same( 'https://example.test/hero.jpg', $parsed['images'][0]['src'] );
+    assert_same( 'https://example.test/2026/11/story/img/thumb.jpg', $parsed['images'][1]['src'] );
+    assert_same( true, $parsed['images'][1]['srcset'] );
+    assert_same( array( 'cdn.example.net' ), $parsed['origins']['unprepared'] );
+    assert_same( true, $parsed['inline_bytes']['style'] > 0 );
+} );
+
+test_case( 'asset ledger flags lazy LCP images, blocking scripts and cold origins', static function (): void {
+    $html = '<html><head>'
+        . '<link rel="stylesheet" href="/a.css"><link rel="stylesheet" href="/b.css"><link rel="stylesheet" href="/c.css">'
+        . '<script src="/head.js"></script>'
+        . '<link rel="stylesheet" href="https://cdn.example.net/x.css">'
+        . '</head><body><img src="/hero.jpg" loading="lazy"></body></html>';
+    $report = PFC_Asset_Ledger::audit( PFC_Asset_Ledger::parse( $html, 'https://example.test/' ) );
+    $ids = array();
+    foreach ( $report['findings'] as $finding ) { $ids[] = $finding['id']; }
+    foreach ( array( 'lcp_lazy', 'lcp_no_fetchpriority', 'lcp_no_dimensions', 'render_blocking_css', 'head_scripts', 'no_preconnect' ) as $expected ) {
+        assert_same( true, in_array( $expected, $ids, true ), 'missing finding: ' . $expected );
+    }
+    assert_same( true, $report['estimate_ms_total'] > 0 );
+    assert_same( 'high', $report['findings'][0]['severity'] );
+    assert_same( true, $report['render_blocking_css'] >= 4 );
+} );
+
+test_case( 'asset ledger does not flag a well-built page', static function (): void {
+    $html = '<html><head>'
+        . '<link rel="preconnect" href="https://cdn.example.net">'
+        . '<link rel="stylesheet" href="/one.css">'
+        . '<script src="/app.js" defer></script>'
+        . '</head><body>'
+        . '<img src="/hero.jpg" width="1200" height="630" fetchpriority="high" srcset="/hero-600.jpg 600w">'
+        . '<img src="/second.jpg" width="800" height="450" loading="lazy" srcset="/second-400.jpg 400w">'
+        . '</body></html>';
+    $report = PFC_Asset_Ledger::audit( PFC_Asset_Ledger::parse( $html, 'https://example.test/' ) );
+    $ids = array();
+    foreach ( $report['findings'] as $finding ) { $ids[] = $finding['id']; }
+    assert_same( false, in_array( 'lcp_lazy', $ids, true ) );
+    assert_same( false, in_array( 'lcp_no_fetchpriority', $ids, true ) );
+    assert_same( false, in_array( 'head_scripts', $ids, true ) );
+    assert_same( false, in_array( 'no_preconnect', $ids, true ) );
+    assert_same( false, in_array( 'images_no_dimensions', $ids, true ) );
+} );
+
+test_case( 'attribution sanitises client values and clamps sizes', static function (): void {
+    $clean = PFC_Attribution::sanitize( array(
+        'lcp_tag'         => 'img',
+        'lcp_bytes'       => 999999999999,
+        'lcp_same_origin' => 1,
+        'inp_tag'         => 'button',
+        'long_task_count' => 99999,
+        'long_task_max'   => 999999,
+        'unexpected'      => 'drop me',
+        'lcp_url'         => 'https://example.test/secret',
+    ) );
+    assert_same( 'IMG', $clean['lcp_tag'] );
+    assert_same( PFC_Attribution::MAX_BYTES, $clean['lcp_bytes'] );
+    assert_same( 1, $clean['lcp_same_origin'] );
+    assert_same( 'BUTTON', $clean['inp_tag'] );
+    assert_same( PFC_Attribution::MAX_LONG_TASKS, $clean['long_task_count'] );
+    assert_same( PFC_Attribution::MAX_LONG_TASK_MS, $clean['long_task_max'] );
+    assert_same( false, array_key_exists( 'unexpected', $clean ) );
+    assert_same( false, array_key_exists( 'lcp_url', $clean ) );
+} );
+
+test_case( 'attribution rejects unknown tags and non-positive values', static function (): void {
+    $clean = PFC_Attribution::sanitize( array( 'lcp_tag' => '<script>alert(1)</script>', 'lcp_bytes' => 0, 'long_task_count' => -5 ) );
+    assert_same( array(), $clean );
 } );
 
 $failures = 0;

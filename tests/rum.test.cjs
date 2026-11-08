@@ -11,7 +11,8 @@ function setup({ beacon = true, late = false } = {}) {
     const tokenData = () => ({ nonce: 'nonce', token: 'token', expires: Date.now() / 1000 + 600, route_group: 'frontend:home' });
     const context = {
         performance: {}, pfcRum: { rate: 1, route_group: 'frontend:home', endpoint: '/rum', tokenEndpoint: '/token' },
-        webVitals: {}, document: { visibilityState: 'visible' }, Blob, Date, Promise,
+        webVitals: {}, document: { visibilityState: 'visible' }, Blob, Date, Promise, URL,
+        location: { href: 'https://example.test/page/', origin: 'https://example.test' },
         // The token-refresh scheduler uses timers. A real browser always has them;
         // the sandbox needs them present (as no-ops) so the promise chain that
         // assigns the token is not broken by a ReferenceError.
@@ -92,7 +93,8 @@ test('honours doNotTrack and Global Privacy Control before collecting anything',
         const callbacks = {}, requests = [], beacons = [];
         const context = {
             performance: {}, pfcRum: { endpoint: '/rum', tokenEndpoint: '/token', route_group: 'frontend:home' },
-            webVitals: {}, document: { visibilityState: 'visible' }, Blob, Date, Promise,
+            webVitals: {}, document: { visibilityState: 'visible' }, Blob, Date, Promise, URL,
+        location: { href: 'https://example.test/page/', origin: 'https://example.test' },
             setTimeout: () => 0, clearTimeout: () => {},
             navigator: Object.assign({ sendBeacon(url, body) { beacons.push(body); return true; } }, signal),
             fetch(url) { requests.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve({}) }); },
@@ -106,4 +108,32 @@ test('honours doNotTrack and Global Privacy Control before collecting anything',
         assert.equal(requests.length, 0, 'no token request when opted out');
         assert.equal(beacons.length, 0);
     }
+});
+
+test('reports bounded LCP and INP attribution without shipping entries or URLs', async () => {
+    const h = setup(); await flush();
+    h.callbacks.LCP({
+        name: 'LCP', value: 2500, entries: [
+            { element: { tagName: 'IMG' }, size: 1843200, url: 'https://example.test/hero.jpg', secret: 'must not be transmitted' },
+        ],
+    });
+    h.callbacks.INP({ name: 'INP', value: 320, entries: [{ target: { tagName: 'BUTTON' }, secret: 'must not be transmitted' }] });
+    h.emit('pagehide'); await flush();
+    const body = JSON.parse(await h.beacons[0].text());
+    assert.equal(body.attribution.lcp_tag, 'IMG');
+    assert.equal(body.attribution.lcp_bytes, 1843200);
+    assert.equal(body.attribution.lcp_same_origin, 1);
+    assert.equal(body.attribution.inp_tag, 'BUTTON');
+    assert.equal(body.entries, undefined);
+    assert.equal(JSON.stringify(body).includes('must not be transmitted'), false);
+    assert.equal(JSON.stringify(body).includes('hero.jpg'), false);
+});
+
+test('an unknown element name is reduced to OTHER rather than echoed', async () => {
+    const h = setup(); await flush();
+    h.callbacks.LCP({ name: 'LCP', value: 1200, entries: [{ element: { tagName: 'my-secret-component' }, size: 4096 }] });
+    h.emit('pagehide'); await flush();
+    const body = JSON.parse(await h.beacons[0].text());
+    assert.equal(body.attribution.lcp_tag, 'OTHER');
+    assert.equal(JSON.stringify(body).includes('my-secret-component'), false);
 });
