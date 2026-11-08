@@ -22,7 +22,7 @@ function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
 if ( 'diag-secret' === $scenario ) {
     $pfc_ts = time();
-    $_GET = array( 'pfc_diag' => '1', 'pfc_ts' => (string) $pfc_ts, 'pfc_sig' => hash_hmac( 'sha256', $pfc_ts . '|/||', 'test-secret' ) );
+    $_GET = array( 'pfc_diag' => '1', 'pfc_ts' => (string) $pfc_ts, 'pfc_sig' => hash_hmac( 'sha256', $pfc_ts . '|/|||standard', 'test-secret' ) );
     $_SERVER['REQUEST_URI'] = '/';
 }
 require dirname( __DIR__ ) . '/mu-plugin/performance-console-bootstrap.php';

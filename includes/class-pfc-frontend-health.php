@@ -23,6 +23,14 @@ final class PFC_Frontend_Health {
         return array( 'pages' => $results );
     }
 
+    /** Recheck one known public origin, rather than a shallow scan's unrelated routes. */
+    public static function inspect_single_route( $url ) {
+        if ( ! is_string( $url ) || ! PFC_Utils::same_origin_url( $url ) ) {
+            return array( 'ok' => false, 'inconclusive' => true, 'error' => 'Route is not on this WordPress origin.' );
+        }
+        return self::probe( $url );
+    }
+
     private static function probe( $url ) {
         $start = microtime( true );
         $response = wp_remote_get( $url, array(
@@ -173,7 +181,15 @@ final class PFC_Frontend_Health {
                 continue;
             }
             if ( $page['total_ms'] > 1500 ) {
-                PFC_Utils::issue( 'frontend', 'critical', 'Frontend route responds slowly to a local HTTP probe', 'The diagnostic GET completed in approximately ' . esc_html( $page['total_ms'] ) . ' ms.', $page['total_ms'] . ' ms', 'Compare with signed PHP profiling. If PHP is fast but this probe is slow, inspect reverse proxy, TLS, CDN, DNS and upstream network layers.', $route );
+                // A local HTTP round-trip includes PHP/theme/plugin execution.
+                // It is not evidence of a CDN, TLS or Redis problem by itself.
+                // Reserve critical for exceptionally slow (>5s) responses;
+                // lower timings are a high-priority diagnostic, not an outage.
+                $severity = $page['total_ms'] >= 5000 ? 'critical' : 'high';
+                PFC_Utils::issue( 'frontend', $severity, 'Frontend route responds slowly to a local HTTP probe',
+                    'The local diagnostic GET took approximately ' . esc_html( $page['total_ms'] ) . ' ms. This includes WordPress/PHP execution plus HTTP transport and any proxy layers; it is not a browser page-load metric.',
+                    $page['total_ms'] . ' ms',
+                    'Profile this exact route using a verified signed PHP probe. If PHP time is similar to this HTTP time, investigate theme, plugin and database work first. Only investigate proxy, TLS, CDN or network overhead when the same-route PHP time is substantially lower.', $route );
             } elseif ( $page['total_ms'] > 700 ) {
                 PFC_Utils::issue( 'frontend', 'high', 'Frontend route has elevated response time', 'The diagnostic GET completed in approximately ' . esc_html( $page['total_ms'] ) . ' ms.', $page['total_ms'] . ' ms', 'Run a signed route profile and compare PHP/database/HTTP timings to the full HTTP response time.', $route );
             }

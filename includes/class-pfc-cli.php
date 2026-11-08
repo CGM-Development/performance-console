@@ -172,6 +172,11 @@ final class PFC_CLI {
     /** Inspect object/page cache integration. */
     public function cache() { WP_CLI::log( wp_json_encode( PFC_Cache_Health::inspect(), JSON_PRETTY_PRINT ) ); }
 
+    /** Run an explicit Redis/object-cache/autoload benchmark. Never runs during routine scans. */
+    public function cache_diagnose() {
+        WP_CLI::log( wp_json_encode( PFC_Cache_Diagnostics::run(), JSON_PRETTY_PRINT ) );
+    }
+
     /** Probe representative frontend routes and HTML/resource pressure. ## OPTIONS [--deep] */
     public function frontend( $args, $assoc ) { WP_CLI::log( wp_json_encode( PFC_Frontend_Health::inspect( ! empty( $assoc['deep'] ) ), JSON_PRETTY_PRINT ) ); }
 

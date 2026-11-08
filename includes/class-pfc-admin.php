@@ -5,6 +5,12 @@ final class PFC_Admin {
     public static function init() {
         add_action( 'admin_menu', array( __CLASS__, 'menu' ) );
         add_action( 'admin_post_pfc_scan', array( __CLASS__, 'scan_post' ) );
+        add_action( 'admin_post_pfc_cache_diagnose', array( __CLASS__, 'cache_diagnose_post' ) );
+        add_action( 'admin_post_pfc_ocp_tracking_report', array( __CLASS__, 'ocp_tracking_report_post' ) );
+        add_action( 'admin_post_pfc_cache_profile', array( __CLASS__, 'cache_profile_post' ) );
+        add_action( 'admin_post_pfc_cache_compare', array( __CLASS__, 'cache_compare_post' ) );
+        add_action( 'admin_post_pfc_http_self_test', array( __CLASS__, 'http_self_test_post' ) );
+        add_action( 'admin_post_pfc_export_ai', array( __CLASS__, 'export_ai_post' ) );
         add_action( 'admin_post_pfc_bootstrap', array( __CLASS__, 'bootstrap_post' ) );
         add_action( 'admin_post_pfc_expired_transients', array( __CLASS__, 'expired_transients' ) );
         add_action( 'admin_post_pfc_db_fix', array( __CLASS__, 'database_fix_post' ) );
@@ -76,6 +82,165 @@ final class PFC_Admin {
         wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=' . ( $deep ? 'database' : 'overview' ) . '&scanned=1&mode=' . ( $deep ? 'deep' : 'safe' ) . ( $deep ? '#database' : '#overview' ) ) ); exit;
     }
 
+    /** Explicit, nonce-protected diagnostic. No Redis benchmark on normal traffic. */
+    public static function cache_diagnose_post() {
+        self::cap();
+        check_admin_referer( 'pfc_cache_diagnose' );
+        $result = PFC_Cache_Diagnostics::run();
+        $ocp_groups = ! empty( $_POST['ocp_groups'] );
+        $ocp_memory = $ocp_groups && ! empty( $_POST['ocp_group_memory'] );
+        $result['object_cache_pro'] = PFC_Object_Cache_Pro::inspect( $ocp_groups, $ocp_memory );
+        set_transient( 'pfc_cache_diagnostic_' . get_current_user_id(), $result, 15 * MINUTE_IN_SECONDS );
+        wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=cache#cache-diagnostics' ) );
+        exit;
+    }
+
+    /** Record only a status selected from native Site Health, not pasted diagnostics. */
+    public static function ocp_tracking_report_post() {
+        self::cap();
+        check_admin_referer( 'pfc_ocp_tracking_report' );
+        $status = isset( $_POST['tracking_status'] ) && is_string( $_POST['tracking_status'] ) ? sanitize_key( wp_unslash( $_POST['tracking_status'] ) ) : '';
+        $category = isset( $_POST['tracking_category'] ) && is_string( $_POST['tracking_category'] ) ? sanitize_key( wp_unslash( $_POST['tracking_category'] ) ) : 'unknown';
+        $command = isset( $_POST['tracking_command'] ) && is_string( $_POST['tracking_command'] ) ? strtoupper( sanitize_key( wp_unslash( $_POST['tracking_command'] ) ) ) : 'NOT_IDENTIFIED';
+        // Optional one-line native failure classifier: process in this request only,
+        // never save, log, echo or export the supplied diagnostic text.
+        $excerpt = isset( $_POST['tracking_error_line'] ) && is_string( $_POST['tracking_error_line'] ) ? wp_unslash( $_POST['tracking_error_line'] ) : '';
+        if ( '' !== trim( $excerpt ) ) {
+            $classified = PFC_Object_Cache_Pro::classify_native_error_line( $excerpt );
+            if ( 'unknown' !== $classified['category'] ) { $category = $classified['category']; }
+            if ( 'NOT_IDENTIFIED' !== $classified['command'] ) { $command = $classified['command']; }
+        }
+        unset( $excerpt, $classified );
+        if ( PFC_Object_Cache_Pro::set_manual_tracking_report( $status, $category, $command ) ) {
+            $key = 'pfc_cache_diagnostic_' . get_current_user_id();
+            $old = get_transient( $key );
+            if ( is_array( $old ) && ! empty( $old['object_cache_pro'] ) ) {
+                $current = (string) ( $old['object_cache_pro']['key_tracking_diagnostics']['source'] ?? '' );
+                $old['object_cache_pro']['key_tracking_triage']['administrator_report'] = array(
+                    'category' => $category, 'command' => $command, 'confidence' => 'administrator_reported',
+                );
+                if ( 'wordpress_site_health_info' !== $current && 'registered_wordpress_site_health_test' !== $current ) {
+                    $old['object_cache_pro']['key_tracking_diagnostics']['status'] = $status;
+                    $old['object_cache_pro']['key_tracking_diagnostics']['source'] = 'administrator_reported_site_health';
+                    $old['object_cache_pro']['key_tracking_diagnostics']['confidence'] = 'user_reported';
+                }
+                set_transient( $key, $old, 15 * MINUTE_IN_SECONDS );
+            }
+        }
+        wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=cache#pfc-ocp-native-tracking' ) );
+        exit;
+    }
+
+    /** Profile a real public route with authenticated, cache-bypassing probes. */
+    public static function cache_profile_post() {
+        self::cap();
+        check_admin_referer( 'pfc_cache_profile' );
+        $url = self::own_url( isset( $_POST['profile_url'] ) ? wp_unslash( $_POST['profile_url'] ) : home_url( '/' ) );
+        if ( is_wp_error( $url ) ) { wp_die( esc_html( $url->get_error_message() ) ); }
+        $runs = max( 1, min( 5, absint( $_POST['runs'] ?? 3 ) ) );
+        $meta = array();
+        $callbacks = ! empty( $_POST['php_callback_profile'] );
+        self::timed_probe( $url, '', $runs, $meta, '', true, $callbacks );
+        $meta['callback_profiling_requested'] = $callbacks;
+        $details = array(
+            'url' => $url,
+            'at' => time(),
+            'probe_meta' => $meta,
+            'runs' => (array) ( $meta['cache_runs'] ?? array() ),
+        );
+        $details['guidance'] = PFC_Request_Cache::guidance( $details['runs'] );
+        $details['findings'] = PFC_Workload_Advisor::findings( $details['runs'], PFC_Scanner::cached_scan() );
+        // Keep the immediately previous verified profile for a before/after
+        // comparison. No persistent history, no automatic server changes.
+        $previous = get_transient( 'pfc_cache_profile_' . get_current_user_id() );
+        if ( is_array( $previous ) && ! empty( $previous['runs'] ) ) {
+            set_transient( 'pfc_cache_profile_previous_' . get_current_user_id(), $previous, 30 * MINUTE_IN_SECONDS );
+        }
+        set_transient( 'pfc_cache_profile_' . get_current_user_id(), $details, 30 * MINUTE_IN_SECONDS );
+        wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=cache#cache-request-profile' ) );
+        exit;
+    }
+
+    /** Three alternating-order signed standard/deep pairs, run only by an admin. */
+    public static function cache_compare_post() {
+        self::cap();
+        check_admin_referer( 'pfc_cache_compare' );
+        $url = self::own_url( isset( $_POST['profile_url'] ) ? wp_unslash( $_POST['profile_url'] ) : home_url( '/' ) );
+        if ( is_wp_error( $url ) ) { wp_die( esc_html( $url->get_error_message() ) ); }
+        $pairs = array();
+        for ( $i = 0; $i < 3; $i++ ) {
+            $results = array();
+            // Alternation reduces a simple first-mode/order bias. It does not
+            // control for production traffic, content or database cache state.
+            $order = 1 === $i ? array( 'deep', 'standard' ) : array( 'standard', 'deep' );
+            foreach ( $order as $mode ) {
+                $meta = array();
+                self::timed_probe( $url, '', 1, $meta, '', true, 'deep' === $mode );
+                $results[ $mode ] = 1 === (int) ( $meta['verified'] ?? 0 ) ? array(
+                    'php_ms' => $meta['php_ms'][0] ?? null,
+                    'sql_ms' => $meta['db_ms'][0] ?? null,
+                    'status' => $meta['statuses'][0] ?? null,
+                    'content_type' => $meta['content_types'][0] ?? '',
+                    'body_bytes' => $meta['body_bytes'][0] ?? 0,
+                    'callback_profile_enabled' => ! empty( $meta['cache_runs'][0]['callback_profile']['enabled'] ),
+                ) : array();
+            }
+            $pairs[] = $results;
+        }
+        $summary = PFC_Profile_Comparison::summarize( $pairs );
+        $summary['captured_at_utc'] = gmdate( 'c' );
+        set_transient( 'pfc_cache_mode_comparison_' . get_current_user_id(), $summary, 20 * MINUTE_IN_SECONDS );
+        wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=cache#pfc-mode-comparison' ) );
+        exit;
+    }
+
+    /** One explicit, bounded loopback; never runs from a public route. */
+    public static function http_self_test_post() {
+        self::cap();
+        check_admin_referer( 'pfc_http_self_test' );
+        $result = PFC_Profiler::http_collector_self_test();
+        set_transient( 'pfc_http_self_test_' . get_current_user_id(), $result, 20 * MINUTE_IN_SECONDS );
+        wp_safe_redirect( admin_url( 'admin.php?page=pfc&view=cache#pfc-http-self-test' ) );
+        exit;
+    }
+
+    /** Download an allowlisted JSON diagnostic report. No new scan is triggered. */
+    public static function export_ai_post() {
+        self::cap();
+        check_admin_referer( 'pfc_export_ai' );
+        $scope = isset( $_POST['scope'] ) && is_string( $_POST['scope'] ) && 'scan' === sanitize_key( wp_unslash( $_POST['scope'] ) ) ? 'scan' : 'cache';
+        $user_id = get_current_user_id();
+        $profile = get_transient( 'pfc_cache_profile_' . $user_id );
+        $profile = is_array( $profile ) ? $profile : array();
+        if ( 'cache' === $scope ) {
+            $compare = get_transient( 'pfc_cache_mode_comparison_' . $user_id );
+            if ( is_array( $compare ) ) { $profile['mode_comparison'] = $compare; }
+        }
+        $report = PFC_AI_Export::build(
+            get_transient( 'pfc_cache_diagnostic_' . $user_id ),
+            $profile,
+            PFC_Scanner::cached_scan(),
+            $scope
+        );
+        if ( ! $report ) {
+            wp_die( esc_html__( 'No recent results available to export. Run a diagnostic or system scan first.', 'performance-console' ), '', array( 'response' => 404 ) );
+        }
+        $json = wp_json_encode( $report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE );
+        if ( ! is_string( $json ) || '' === $json ) {
+            wp_die( esc_html__( 'Unable to prepare the diagnostic export.', 'performance-console' ), '', array( 'response' => 500 ) );
+        }
+        if ( headers_sent() ) {
+            wp_die( esc_html__( 'Output began before the diagnostic export. Disable PHP notices and retry.', 'performance-console' ) );
+        }
+        nocache_headers();
+        header( 'Content-Type: application/json; charset=utf-8' );
+        header( 'X-Content-Type-Options: nosniff' );
+        header( 'Content-Disposition: attachment; filename="performance-console-ai-' . $scope . '-' . gmdate( 'Ymd-His' ) . '.json"' );
+        // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Downloaded JSON is generated from explicitly allowlisted metrics.
+        echo $json;
+        exit;
+    }
+
     public static function bootstrap_post() {
         self::cap(); check_admin_referer( 'pfc_bootstrap' );
         PFC_Bootstrap::install();
@@ -84,6 +249,9 @@ final class PFC_Admin {
 
     public static function expired_transients() {
         self::cap(); check_admin_referer( 'pfc_transients' );
+        if ( empty( $_POST['confirm_expired_cleanup'] ) || '1' !== (string) wp_unslash( $_POST['confirm_expired_cleanup'] ) ) {
+            wp_die( esc_html__( 'Confirm bounded expired-transient cleanup before continuing.', 'performance-console' ), '', array( 'response' => 400 ) );
+        }
         $result = PFC_Database_Repair::execute( 'cleanup_expired_transients', array( 'limit' => 1000 ), false );
         self::store_repair_result( $result, 'cleanup_expired_transients' );
         PFC_Scanner::scan( false, false );
@@ -255,7 +423,25 @@ final class PFC_Admin {
             foreach ( (array) ( $incident['routes'] ?? array() ) as $candidate ) {
                 if ( filter_var( $candidate, FILTER_VALIDATE_URL ) ) { $route = $candidate; break; }
             }
-            if ( 'scan' === (string) ( $incident['source'] ?? '' ) || 'legacy' === (string) ( $incident['source'] ?? '' ) ) {
+            if ( 'frontend' === (string) ( $incident['area'] ?? '' ) && $route && PFC_Utils::same_origin_url( $route ) ) {
+                // A shallow scan probes only a few recently published routes and
+                // may never visit this incident's URL. Recheck this exact route.
+                $page = PFC_Frontend_Health::inspect_single_route( $route );
+                if ( ! empty( $page['inconclusive'] ) || empty( $page['ok'] ) ) {
+                    PFC_Utils::set_incident_status( $key, 'open' );
+                    $message = __( 'Route recheck was inconclusive. The incident remains open; check the response and retry.', 'performance-console' );
+                } else {
+                    PFC_Utils::begin_issue_collection( 'manual' );
+                    PFC_Frontend_Health::generate_issues( array( 'pages' => array( $page ) ) );
+                    $observed = PFC_Utils::collected_incidents();
+                    PFC_Utils::end_issue_collection();
+                    $reproduced = in_array( $key, $observed, true );
+                    PFC_Utils::set_incident_status( $key, $reproduced ? 'open' : 'observing' );
+                    $message = $reproduced
+                        ? __( 'Exact-route HTTP recheck confirmed the slow response. Severity and evidence have been refreshed. Compare with signed PHP time for the same URL.', 'performance-console' )
+                        : __( 'Slow-response threshold was not reproduced on this exact route. The incident is now observing, not resolved; other affected routes were not rechecked.', 'performance-console' );
+                }
+            } elseif ( 'scan' === (string) ( $incident['source'] ?? '' ) || 'legacy' === (string) ( $incident['source'] ?? '' ) ) {
                 $scan = PFC_Scanner::scan( false, false );
                 $reproduced = in_array( $key, (array) ( $scan['observed_incidents'] ?? array() ), true );
                 PFC_Utils::set_incident_status( $key, $reproduced ? 'open' : 'observing' );
@@ -298,12 +484,12 @@ final class PFC_Admin {
         return $scheme . '://' . $host . ':' . $port;
     }
 
-    private static function timed_probe( $url, $exclude, $runs, &$meta = null, $required_text = '' ) {
+    private static function timed_probe( $url, $exclude, $runs, &$meta = null, $required_text = '', $capture_cache = false, $php_callbacks = false ) {
         $times = array();
         $meta = array( 'requested' => (int) $runs, 'verified' => 0, 'http_errors' => 0, 'bad_status' => 0, 'redirects' => 0, 'probe_mismatch' => 0, 'server_missing' => 0, 'statuses' => array(), 'content_types' => array(), 'body_bytes' => array(), 'wall_ms' => array(), 'php_ms' => array(), 'db_ms' => array(), 'query_counts' => array(), 'cache_bypassed' => true );
         for ( $i = 0; $i < $runs; $i++ ) {
             $probe_id = wp_generate_uuid4();
-            $token = PFC_Bootstrap::token( $url, $exclude, $probe_id );
+            $token = PFC_Bootstrap::token( $url, $exclude, $probe_id, $php_callbacks );
             $probe = add_query_arg( $token, $url );
             $start = microtime( true );
             $res = wp_remote_get( $probe, array( 'timeout' => 30, 'redirection' => 0, 'sslverify' => apply_filters( 'https_local_ssl_verify', false ), 'headers' => array( 'Cache-Control' => 'no-cache', 'Pragma' => 'no-cache' ) ) );
@@ -330,6 +516,28 @@ final class PFC_Admin {
             $meta['php_ms'][] = round( (float) $server['php_ms'], 1 );
             $meta['db_ms'][] = round( (float) $server['db_ms'], 1 );
             $meta['query_counts'][] = (int) $server['query_count'];
+            if ( $capture_cache ) {
+                $details = PFC_Request_Cache::probe_details( $probe_id );
+                $meta['cache_runs'][] = array(
+                    'php_ms' => round( (float) $server['php_ms'], 2 ),
+                    'db_ms' => round( (float) $server['db_ms'], 2 ),
+                    'sql_timing_available' => ! empty( $details['sql_timing_available'] ),
+                    'http_ms' => round( (float) $server['http_ms'], 2 ),
+                    'queries' => (int) $server['query_count'],
+                    'cache' => (array) ( $details['cache'] ?? array( 'available' => false ) ),
+                    'sql_components' => (array) ( $details['sql_components'] ?? array() ),
+                    'sql_patterns' => (array) ( $details['sql_patterns'] ?? array() ),
+                    'sql_callsites' => (array) ( $details['sql_callsites'] ?? array() ),
+                    'sql_callsites_truncated' => ! empty( $details['sql_callsites_truncated'] ),
+                    'http_requests' => (array) ( $details['http_requests'] ?? array() ),
+                    'http_callsites' => (array) ( $details['http_callsites'] ?? array() ),
+                    'http_truncated' => ! empty( $details['http_truncated'] ),
+                    'phase_timings' => (array) ( $details['phase_timings'] ?? array() ),
+                    'callback_profile' => (array) ( $details['callback_profile'] ?? array( 'enabled' => false ) ),
+                    'bricks_profile' => (array) ( $details['bricks_profile'] ?? array( 'enabled' => false ) ),
+                    'cache_attribution_capability' => (array) ( $details['cache_attribution_capability'] ?? array() ),
+                );
+            }
             $times[] = round( (float) $server['php_ms'], 1 );
         }
         return $times;
@@ -353,7 +561,7 @@ final class PFC_Admin {
 
     public static function page() {
         self::cap(); global $wpdb;
-        $allowed_views = array( 'overview', 'findings', 'database', 'profiling', 'monitoring', 'system' );
+        $allowed_views = array( 'overview', 'findings', 'database', 'profiling', 'monitoring', 'system', 'cache' );
         $active_view = sanitize_key( wp_unslash( $_GET['view'] ?? 'overview' ) );
         if ( ! in_array( $active_view, $allowed_views, true ) ) { $active_view = 'overview'; }
         // Version-checked: a report cached by an older release is discarded rather
@@ -398,7 +606,12 @@ final class PFC_Admin {
         $backup_notice = get_transient( 'pfc_backup_notice_' . get_current_user_id() );
         $runtime = get_option( 'pfc_runtime', array( 'sample_rate' => 0.0002, 'rum_rate' => 0.005, 'retention_days' => 30 ) );
         $active_plugins = 'profiling' === $active_view ? array_filter( PFC_Scanner::plugins(), static function ( $p ) { return ! empty( $p['active'] ); } ) : array();
-        $bootstrap_status = 'overview' === $active_view ? PFC_Bootstrap::status() : array();
+        $bootstrap_status = in_array( $active_view, array( 'overview', 'cache' ), true ) ? PFC_Bootstrap::status() : array();
+        $cache_diagnostic = 'cache' === $active_view ? get_transient( 'pfc_cache_diagnostic_' . get_current_user_id() ) : false;
+        $cache_profile = 'cache' === $active_view ? get_transient( 'pfc_cache_profile_' . get_current_user_id() ) : false;
+        $cache_previous = 'cache' === $active_view ? get_transient( 'pfc_cache_profile_previous_' . get_current_user_id() ) : false;
+        $cache_mode_comparison = 'cache' === $active_view ? get_transient( 'pfc_cache_mode_comparison_' . get_current_user_id() ) : false;
+        $http_self_test = 'cache' === $active_view ? get_transient( 'pfc_http_self_test_' . get_current_user_id() ) : false;
         $incident_notice = get_transient( 'pfc_incident_notice_' . get_current_user_id() );
         if ( false !== $incident_notice ) { delete_transient( 'pfc_incident_notice_' . get_current_user_id() ); }
         ?>
@@ -411,7 +624,7 @@ final class PFC_Admin {
             </div>
         </header>
         <nav class="pfc-suite-nav" aria-label="<?php esc_attr_e( 'Performance Console sections', 'performance-console' ); ?>">
-            <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
+            <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ), 'cache' => array( 'dashicons-performance', __( 'Cache & Redis', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=' . $view_slug ) . '#' . $view_slug ); ?>" data-pfc-tab="<?php echo esc_attr( $view_slug ); ?>"<?php echo $active_view === $view_slug ? ' aria-current="page"' : ''; ?>><span class="dashicons <?php echo esc_attr( $view_meta[0] ); ?>" aria-hidden="true"></span><?php echo esc_html( $view_meta[1] ); ?><?php if ( 'findings' === $view_slug ): ?> <span class="pfc-nav-count"><?php echo esc_html( $open_issue_total > 999 ? '999+' : (string) $open_issue_total ); ?></span><?php endif; ?></a>
             <?php endforeach; ?>
         </nav>
@@ -489,7 +702,7 @@ final class PFC_Admin {
 
         <div class="pfc-actions">
         <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_scan"><input type="hidden" name="deep" value="1"><?php wp_nonce_field('pfc_scan'); ?><button class="button button-primary"><span class="dashicons dashicons-database" aria-hidden="true"></span>Run Deep Database Scan</button></form>
-        <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_expired_transients"><?php wp_nonce_field('pfc_transients'); ?><button class="button"><span class="dashicons dashicons-trash" aria-hidden="true"></span>Delete 1,000 Expired Transients</button></form>
+        <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_expired_transients"><?php wp_nonce_field('pfc_transients'); ?><label><input type="checkbox" required name="confirm_expired_cleanup" value="1"> Confirm deletion of up to 1,000 already-expired transients (not reversible).</label> <button class="button"><span class="dashicons dashicons-trash" aria-hidden="true"></span>Delete 1,000 Expired Transients</button></form>
         </div>
         <h2 id="database-backups">Database Backups</h2>
         <div class="pfc-box">
@@ -738,10 +951,13 @@ final class PFC_Admin {
                     <div class="pfc-incident__summary"><h3><?php echo esc_html( $incident['title'] ); ?></h3><p><?php echo wp_kses_post( $incident['message'] ); ?></p><p class="pfc-incident__recommendation"><strong>Recommended next step:</strong> <?php echo wp_kses_post( $incident['recommendation'] ); ?></p></div>
                     <dl class="pfc-incident__facts"><div><dt>Impact</dt><dd><?php echo esc_html( $incident['impact'] ?: 'Needs measurement' ); ?></dd></div><div><dt>Evidence</dt><dd><?php echo esc_html( number_format_i18n( (int) $incident['occurrences'] ) ); ?> occurrence(s) across <?php echo esc_html( number_format_i18n( count( $routes ) ) ); ?> route(s)</dd></div><div><dt>Last confirmed</dt><dd><?php echo esc_html( $incident['last_seen'] ); ?> UTC</dd></div></dl>
                 </div>
-                <?php if ( $routes ): ?><details class="pfc-incident__routes"><summary>View affected routes and evidence</summary><div><ul><?php foreach ( array_slice( $routes, 0, 25 ) as $route ): ?><li><code><?php echo esc_html( $route ); ?></code></li><?php endforeach; ?></ul><?php if(count($routes)>25): ?><p><?php echo esc_html( number_format_i18n( count($routes)-25 ) ); ?> additional route(s) are grouped into this incident.</p><?php endif; ?></div></details><?php endif; ?>
+                <?php if ( 'frontend' === $incident['area'] && false !== strpos( (string) $incident['title'], 'local HTTP probe' ) ): ?>
+                    <p class="pfc-incident__context"><strong>Measurement context:</strong> This is a local HTTP round-trip, not just proxy or network latency. WordPress PHP may account for most of it. Use <em>Profile representative route</em> on the same URL before blaming CDN, TLS or Redis. Recheck tests one representative route; a new scan must refresh the other affected routes.</p>
+                <?php endif; ?>
+                <?php if ( $routes ): ?><details class="pfc-incident__routes"><summary>View affected routes and evidence <span class="pfc-incident__route-count"><?php echo esc_html( number_format_i18n( count( $routes ) ) ); ?> route(s)</span></summary><div class="pfc-incident__route-content"><ul><?php foreach ( array_slice( $routes, 0, 25 ) as $route ): ?><li><code><?php echo esc_html( $route ); ?></code></li><?php endforeach; ?></ul><?php if(count($routes)>25): ?><p><?php echo esc_html( number_format_i18n( count($routes)-25 ) ); ?> additional route(s) are grouped into this incident.</p><?php endif; ?></div></details><?php endif; ?>
                 <footer class="pfc-incident__actions">
                     <?php if ( 'save' === $incident['area'] ): ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=profiling#save-profiling') ); ?>">Capture another save</a><?php elseif ( $representative ): ?><a class="button button-primary" href="<?php echo esc_url( add_query_arg( array( 'page'=>'pfc','view'=>'profiling','profile_url'=>$representative ), admin_url('admin.php') ) . '#profiling' ); ?>">Profile representative route</a><?php elseif ( 'database' === $incident['area'] ): ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=database#database') ); ?>">Open database diagnostics</a><?php else: ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=profiling#profiling') ); ?>">Open profiling tools</a><?php endif; ?>
-                    <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_incident_action"><input type="hidden" name="incident_key" value="<?php echo esc_attr( $incident['incident_key'] ); ?>"><?php wp_nonce_field( 'pfc_incident_' . $incident['incident_key'] ); ?><button class="button" name="incident_action" value="verify">Recheck now</button><button class="button" name="incident_action" value="snooze">Snooze 7 days</button><button class="button" name="incident_action" value="resolve">Mark resolved</button><button class="button-link" name="incident_action" value="accept">Accept risk</button></form>
+                    <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_incident_action"><input type="hidden" name="incident_key" value="<?php echo esc_attr( $incident['incident_key'] ); ?>"><?php wp_nonce_field( 'pfc_incident_' . $incident['incident_key'] ); ?><button class="button" name="incident_action" value="verify"><?php echo count( $routes ) > 1 ? 'Recheck one route' : 'Recheck now'; ?></button><button class="button" name="incident_action" value="snooze">Snooze 7 days</button><button class="button" name="incident_action" value="resolve">Mark resolved</button><button class="button-link" name="incident_action" value="accept">Accept risk</button></form>
                 </footer>
             </article>
         <?php endforeach; ?>
@@ -749,9 +965,535 @@ final class PFC_Admin {
         </section>
         <?php endif; ?>
 
+        <?php if ( 'cache' === $active_view ): ?>
+        <section class="pfc-view" data-pfc-view="cache" id="pfc-view-cache">
+            <div class="pfc-view-heading"><h2>Cache & Redis diagnostics</h2><p>Measure WordPress cache and Redis timing, and inspect Object Cache Pro using supported, opt-in interfaces. No cache flush, ACL modification or drop-in replacement is performed.</p></div>
+            <div class="pfc-box" id="pfc-cache-bootstrap-status"><h3>MU Diagnostic Bootstrap Status</h3>
+                <p>Installed: <strong><?php echo ! empty( $bootstrap_status['installed'] ) ? 'Yes' : 'No'; ?></strong> · Installed version: <strong><?php echo esc_html( (string) ( $bootstrap_status['version'] ?: 'Unknown' ) ); ?></strong> · Required version: <strong><?php echo esc_html( PFC_Bootstrap::VERSION ); ?></strong> · Status: <strong><?php echo ! empty( $bootstrap_status['current'] ) ? 'Current' : 'Missing or outdated'; ?></strong></p>
+                <?php if ( empty( $bootstrap_status['current'] ) ): ?><form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"><input type="hidden" name="action" value="pfc_bootstrap"><?php wp_nonce_field( 'pfc_bootstrap' ); ?><button class="button">Repair diagnostic bootstrap</button></form><?php endif; ?>
+            </div>
+            <?php if ( $cache_diagnostic || $cache_profile ): ?>
+            <div class="pfc-box" id="cache-export">
+                <h3>Export results for AI analysis</h3>
+                <p>Download the latest Redis test and real-request profile together as one structured JSON file. The export also includes a compact summary of your latest system scan, if available.</p>
+                <form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                    <input type="hidden" name="action" value="pfc_export_ai">
+                    <input type="hidden" name="scope" value="cache">
+                    <?php wp_nonce_field( 'pfc_export_ai' ); ?>
+                    <button type="submit" class="button button-primary"><span class="dashicons dashicons-download" aria-hidden="true"></span> Export for AI Analysis (.json)</button>
+                </form>
+                <p class="description">Includes the measured latencies, Redis counters, cache phases, SQL timing attribution and autoload sizes that are currently available. Excludes credentials, URLs, IP addresses, option values, raw SQL and visitor data. Results are available for 15 minutes after testing. Review the JSON before uploading it to an external service.</p>
+            </div>
+            <?php endif; ?>
+
+            <div class="pfc-box" id="cache-request-profile">
+                <h3>Real-request cache workload</h3>
+                <p>Profile the actual WordPress work for a public page, not just a synthetic Redis key. Each test uses a signed, cache-bypassing request and verifies its saved server-side measurement before including it.</p>
+                <form class="pfc-form-row" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                    <input type="hidden" name="action" value="pfc_cache_profile">
+                    <?php wp_nonce_field( 'pfc_cache_profile' ); ?>
+                    <label>Public URL <input type="url" name="profile_url" required value="<?php echo esc_attr( home_url( '/' ) ); ?>"></label>
+                    <label>Requests <select name="runs"><option value="3" selected>3</option><option value="5">5</option></select></label>
+                    <label><input type="checkbox" name="php_callback_profile" value="1"> Deep PHP + Bricks query/render profiling (extra overhead)</label>
+                    <button class="button button-primary" type="submit">Profile real requests</button>
+                </form>
+                <p class="description">Enable deep PHP callback profiling only for a controlled diagnosis. It temporarily wraps selected callbacks on signed probes; by-reference callables are skipped. Use a separate uninstrumented profile for comparison. The profiler reads hit/miss counters where available, SQL queries, PHP time and request phases. It does not override the Redis drop-in, record cache values or inject traffic tracing into normal page views. Signed deep traces add some overhead. Use 3 to 5 samples to compare routes, not to establish production percentiles.</p>
+                <details id="pfc-mode-comparison" style="margin-top:12px"><summary><strong>Compare standard and deep PHP profiling (3 paired runs)</strong></summary>
+                    <p>Run three alternating-order pairs of signed, verified homepage requests with the same route. This is an optional, potentially resource-intensive diagnostic. It makes no configuration changes and is not a production benchmark.</p>
+                    <form class="pfc-form-row" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                        <input type="hidden" name="action" value="pfc_cache_compare"><?php wp_nonce_field( 'pfc_cache_compare' ); ?>
+                        <label>Public URL <input type="url" name="profile_url" required value="<?php echo esc_attr( home_url( '/' ) ); ?>"></label>
+                        <button class="button" type="submit">Run 3 paired comparisons (6 requests)</button>
+                    </form>
+                    <?php if ( is_array( $cache_mode_comparison ) ): ?>
+                        <p><strong>Verified comparable pairs:</strong> <?php echo intval( $cache_mode_comparison['valid_pairs'] ?? 0 ); ?>/<?php echo intval( $cache_mode_comparison['requested_pairs'] ?? 0 ); ?> · <strong>Standard median PHP:</strong> <?php echo isset( $cache_mode_comparison['standard_median_php_ms'] ) ? esc_html( (string) $cache_mode_comparison['standard_median_php_ms'] ) . ' ms' : 'Not measured'; ?> · <strong>Deep median PHP:</strong> <?php echo isset( $cache_mode_comparison['deep_median_php_ms'] ) ? esc_html( (string) $cache_mode_comparison['deep_median_php_ms'] ) . ' ms' : 'Not measured'; ?></p>
+                        <p><strong>Median paired deep minus standard:</strong> <?php echo isset( $cache_mode_comparison['paired_median_deep_minus_standard_ms'] ) ? esc_html( (string) $cache_mode_comparison['paired_median_deep_minus_standard_ms'] ) . ' ms' : 'Not measured'; ?>. <?php echo ! empty( $cache_mode_comparison['comparable'] ) ? 'All three pairs verified and matched the response checks.' : 'Comparison incomplete; do not interpret the delta as a measured overhead.'; ?></p>
+                        <p class="description"><?php echo esc_html( (string) ( $cache_mode_comparison['notes'] ?? '' ) ); ?></p>
+                    <?php endif; ?>
+                </details>
+                <?php if ( $cache_profile ):
+                    $cp = (array) $cache_profile;
+                    $cm = (array) ( $cp['probe_meta'] ?? array() );
+                    $cruns = (array) ( $cp['runs'] ?? array() ); ?>
+                    <h4>Verified route profile</h4>
+                    <p><strong>URL:</strong> <code><?php echo esc_html( (string) ( $cp['url'] ?? '' ) ); ?></code> · <strong>Verified:</strong> <?php echo intval( $cm['verified'] ?? 0 ); ?>/<?php echo intval( $cm['requested'] ?? 0 ); ?> · <strong>Captured:</strong> <?php echo esc_html( gmdate( 'Y-m-d H:i', (int) ( $cp['at'] ?? 0 ) ) ); ?> UTC</p>
+                    <?php if ( ! $cruns ): ?>
+                        <p class="pfc-warning">No verified profile data. Check that loopback HTTP requests work, the MU bootstrap is current, and the CDN/page cache does not serve this signed diagnostic route. <?php echo intval( $cm['probe_mismatch'] ?? 0 ); ?> response(s) did not pass header verification; <?php echo intval( $cm['server_missing'] ?? 0 ); ?> had no matching server-side run.</p>
+                    <?php else: ?>
+                        <table class="widefat striped pfc-responsive-table">
+                            <thead><tr><th>Run</th><th>PHP</th><th>SQL time</th><th>SQL queries</th><th>HTTP API time</th><th>Cache GET lookups</th><th>Hits</th><th>Misses</th><th>Hit ratio</th></tr></thead>
+                            <tbody><?php foreach ( $cruns as $i => $run ): $c = (array) ( $run['cache'] ?? array() ); ?>
+                                <tr><td><?php echo intval( $i + 1 ); ?></td>
+                                <td><?php echo esc_html( (string) $run['php_ms'] ); ?> ms</td>
+                                <td><?php echo ! empty( $run['sql_timing_available'] ) ? esc_html( (string) $run['db_ms'] ) . ' ms' : 'Not measured'; ?></td>
+                                <td><?php echo intval( $run['queries'] ?? 0 ); ?></td>
+                                <td><?php echo isset( $run['http_ms'] ) ? esc_html( (string) $run['http_ms'] ) . ' ms' : 'n/a'; ?></td>
+                                <td><?php echo isset( $c['lookups'] ) ? intval( $c['lookups'] ) : 'Not exposed'; ?></td>
+                                <td><?php echo isset( $c['hits'] ) ? intval( $c['hits'] ) : 'n/a'; ?></td>
+                                <td><?php echo isset( $c['misses'] ) ? intval( $c['misses'] ) : 'n/a'; ?></td>
+                                <td><?php echo isset( $c['hit_rate_percent'] ) ? esc_html( (string) $c['hit_rate_percent'] ) . '%' : 'n/a'; ?></td></tr>
+                            <?php endforeach; ?></tbody>
+                        </table>
+                        <p class="description">Median verified PHP: <?php echo esc_html( round( PFC_Utils::median( (array) ( $cm['php_ms'] ?? array() ) ), 2 ) ); ?> ms. Median SQL: <?php echo ! empty( $cruns[0]['sql_timing_available'] ) ? esc_html( round( PFC_Utils::median( (array) ( $cm['db_ms'] ?? array() ) ), 2 ) ) . ' ms' : 'not available'; ?>. Hit/miss lookups are not Redis commands, and this table does not measure Redis processing time inside the cache drop-in.</p>
+                        <?php $latest = (array) end( $cruns ); $cache_result = (array) ( $latest['cache'] ?? array() ); $phases = (array) ( $cache_result['phases'] ?? array() ); ?>
+                        <?php if ( $phases ): ?><details open><summary>Cache lookups by request phase, last verified run</summary>
+                            <table class="widefat striped"><thead><tr><th>From</th><th>To</th><th>Hits</th><th>Misses</th><th>GET lookups</th></tr></thead><tbody>
+                            <?php foreach ( $phases as $phase ): ?><tr><td><?php echo esc_html( $phase['from'] ?? '' ); ?></td><td><?php echo esc_html( $phase['to'] ?? '' ); ?></td><td><?php echo isset( $phase['hits'] ) ? intval( $phase['hits'] ) : 'n/a'; ?></td><td><?php echo isset( $phase['misses'] ) ? intval( $phase['misses'] ) : 'n/a'; ?></td><td><?php echo isset( $phase['lookups'] ) ? intval( $phase['lookups'] ) : 'n/a'; ?></td></tr><?php endforeach; ?>
+                            </tbody></table><p class="description">Phases are time intervals, not plugin identities. Calls may happen inside any plugin or theme executing within an interval.</p></details><?php endif; ?>
+                        <?php if ( ! empty( $latest['sql_components'] ) ): ?><details><summary>Top SQL-attributed components, last verified run</summary>
+                            <table class="widefat striped"><thead><tr><th>Component</th><th>SQL time</th><th>Queries</th><th>Patterns</th></tr></thead><tbody>
+                            <?php foreach ( array_slice( (array) $latest['sql_components'], 0, 8 ) as $row ): ?><tr><td><code><?php echo esc_html( (string) ( $row['component'] ?? '' ) ); ?></code></td><td><?php echo esc_html( (string) ( $row['sql_ms'] ?? 0 ) ); ?> ms</td><td><?php echo intval( $row['queries'] ?? 0 ); ?></td><td><?php echo intval( $row['patterns'] ?? 0 ); ?></td></tr><?php endforeach; ?></tbody></table>
+                            <p class="description">This identifies SQL query origins only. It does not identify which plugin called Redis or measure the time spent in its cache calls.</p></details><?php endif; ?>
+                    <?php endif; ?>
+                    <?php if ( ! empty( $latest['phase_timings'] ) ): ?>
+                        <details id="pfc-phase-time"><summary>Slowest WordPress execution intervals (wall time)</summary>
+                        <table class="widefat striped"><thead><tr><th>Phase interval</th><th>Duration</th></tr></thead><tbody>
+                        <?php foreach ( array_slice( (array) $latest['phase_timings'], 0, 12 ) as $interval ): ?>
+                        <tr><td><code><?php echo esc_html( str_replace( '_to_', ' → ', (string) ( $interval['interval'] ?? '' ) ) ); ?></code></td><td><?php echo esc_html( (string) ( $interval['duration_ms'] ?? 0 ) ); ?> ms</td></tr>
+                        <?php endforeach; ?></tbody></table>
+                        <p class="description">Intervals include theme, plugin, cache and database work executing during that period; they are not per-plugin execution time, and should not be added to overlapping hook timing measurements.</p>
+                        </details>
+                    <?php endif; ?>
+                    <?php if ( ! empty( $latest['http_requests'] ) ): ?>
+                        <details open id="pfc-http-attribution"><summary>Outbound HTTP timing and likely callers, last verified request</summary>
+                        <p class="description">Captured through the WordPress HTTP API. Target host, path, parameters, response and error text are withheld here. Component attribution is based on a compact PHP call stack and can be unknown. Durations are not guaranteed exclusive of other measured time.</p>
+                        <table class="widefat striped pfc-responsive-table"><thead><tr><th>Likely component</th><th>Destination</th><th>Method</th><th>Blocking</th><th>Status</th><th>Duration</th></tr></thead><tbody>
+                        <?php foreach ( array_slice( (array) $latest['http_requests'], 0, 20 ) as $call ): ?>
+                            <tr><td><code><?php echo esc_html( (string) ( $call['component'] ?? 'core:unknown' ) ); ?></code></td>
+                            <td><?php echo esc_html( (string) ( $call['target_type'] ?? 'unknown' ) ); ?></td>
+                            <td><?php echo esc_html( (string) ( $call['method'] ?? 'OTHER' ) ); ?></td>
+                            <td><?php echo ! empty( $call['blocking'] ) ? 'Yes' : 'No'; ?></td>
+                            <td><?php echo isset( $call['status'] ) ? intval( $call['status'] ) : 'Error / unknown'; ?></td>
+                            <td><?php echo esc_html( (string) ( $call['duration_ms'] ?? 0 ) ); ?> ms</td></tr>
+                        <?php endforeach; ?></tbody></table>
+                        <p class="description">Repair strategy: identify the owning integration and change its own settings or code to cache responses, batch lookups or move nonessential remote work to a background queue. Performance Console never globally blocks HTTP requests or caches potentially authenticated responses.</p>
+                        </details>
+                    <?php endif; ?>
+                    <?php if ( ! empty( $latest['http_callsites'] ) ): ?>
+                        <details id="pfc-http-callsite-inspector" open>
+                            <summary>HTTP call-site inspector and rate-limit evidence (last verified request)</summary>
+                            <p class="description">Signed deep request only. Shows the PHP call site that initiated each WordPress HTTP API target group. Target IDs are site-secret HMACs of HTTP method, destination host and path; they reveal neither the domain nor URL or query parameters. Multiple calls to a group are NOT proof of retries because query strings may differ.</p>
+                            <?php if ( ! empty( $latest['http_truncated'] ) ): ?><p class="pfc-warning">Over 100 HTTP events were observed. Results are incomplete because collection was bounded.</p><?php endif; ?>
+                            <table class="widefat striped pfc-responsive-table"><thead><tr><th>Component / target group</th><th>Calls / status</th><th>HTTP time (summed)</th><th>PHP call site</th></tr></thead><tbody>
+                            <?php foreach ( array_slice( (array) $latest['http_callsites'], 0, 20 ) as $http_site ): ?>
+                                <tr>
+                                    <td><strong><code><?php echo esc_html( (string) ( $http_site['component'] ?? '' ) ); ?></code></strong><br><small><?php echo esc_html( (string) ( $http_site['target_type'] ?? '' ) ); ?> · <?php echo esc_html( (string) ( $http_site['method'] ?? '' ) ); ?><br>Group: <code><?php echo esc_html( (string) ( $http_site['target_group_id'] ?? 'unknown' ) ); ?></code></small></td>
+                                    <td><?php echo intval( $http_site['calls'] ?? 0 ); ?> calls; <?php echo intval( $http_site['failed_calls'] ?? 0 ); ?> failed<br><strong><?php echo intval( $http_site['rate_limited_429'] ?? 0 ); ?> HTTP 429</strong>; <?php echo intval( $http_site['no_status_failures'] ?? 0 ); ?> no-status failures</td>
+                                    <td><?php echo intval( $http_site['blocking_calls'] ?? 0 ); ?> blocking call(s)<br><?php echo esc_html( (string) ( $http_site['total_ms'] ?? 0 ) ); ?> ms summed; slowest <?php echo esc_html( (string) ( $http_site['slowest_ms'] ?? 0 ) ); ?> ms</td>
+                                    <td><strong><code><?php echo esc_html( (string) ( $http_site['function'] ?? 'unknown' ) ); ?></code></strong><br><small><code><?php echo esc_html( (string) ( $http_site['source'] ?? 'unattributed' ) ); ?></code>:<?php echo intval( $http_site['line'] ?? 0 ); ?> · Hook: <code><?php echo esc_html( (string) ( $http_site['hook'] ?? 'unavailable' ) ); ?></code></small></td>
+                                </tr>
+                            <?php endforeach; ?></tbody></table>
+                            <p class="description">A recurring 429 means the remote provider rejected requests. Confirm the integration's quota, refresh scheduling, product-data cache and backoff settings. Do not automatically block, resend or override third-party calls. HTTP totals may overlap PHP timing.</p>
+                        </details>
+                    <?php endif; ?>
+                    <?php $sql_first_following = PFC_Workload_Advisor::first_vs_following_sql( $cruns ); ?>
+                    <?php if ( ! empty( $sql_first_following['available'] ) ): ?>
+                        <details id="pfc-first-following-sql"><summary>First request versus following SQL analysis</summary>
+                            <p>First SQL: <strong><?php echo esc_html( (string) $sql_first_following['first_sql_ms'] ); ?> ms</strong>; following requests median: <strong><?php echo esc_html( (string) $sql_first_following['later_median_sql_ms'] ); ?> ms</strong>. Difference: <strong><?php echo esc_html( (string) $sql_first_following['first_minus_later_ms'] ); ?> ms</strong>.</p>
+                            <?php if ( ! empty( $sql_first_following['first_only_patterns'] ) ): ?>
+                            <table class="widefat striped pfc-responsive-table"><thead><tr><th>First-only SQL fingerprint</th><th>Component</th><th>First request SQL</th></tr></thead><tbody>
+                            <?php foreach ( $sql_first_following['first_only_patterns'] as $first_pattern ): ?><tr><td><code><?php echo esc_html( (string) $first_pattern['pattern_id'] ); ?></code></td><td><code><?php echo esc_html( (string) $first_pattern['component'] ); ?></code></td><td><?php echo esc_html( (string) $first_pattern['first_sql_ms'] ); ?> ms</td></tr><?php endforeach; ?>
+                            </tbody></table>
+                            <?php endif; ?>
+                            <p class="description">Only the observed signed sample is compared. First-only SQL patterns come from a bounded top-pattern list and may omit additional queries. A first-run spike does not prove cold-cache causation: page cache is bypassed, and database state, content and server load can change.</p>
+                        </details>
+                    <?php endif; ?>
+                    <?php if ( ! empty( $latest['sql_patterns'] ) ): ?>
+                        <details id="pfc-sql-patterns"><summary>Repeated SQL patterns (anonymized), last verified request</summary>
+                            <table class="widefat striped pfc-responsive-table"><thead><tr><th>Pattern fingerprint</th><th>Attributed component</th><th>Executions</th><th>Total SQL</th><th>Slowest execution</th></tr></thead><tbody>
+                            <?php foreach ( array_slice( (array) $latest['sql_patterns'], 0, 20 ) as $pattern ): ?>
+                                <tr><td><code><?php echo esc_html( (string) ( $pattern['pattern_id'] ?? '' ) ); ?></code></td>
+                                    <td><code><?php echo esc_html( (string) ( $pattern['component'] ?? '' ) ); ?></code></td>
+                                    <td><?php echo intval( $pattern['count'] ?? 0 ); ?></td>
+                                    <td><?php echo esc_html( (string) ( $pattern['total_ms'] ?? 0 ) ); ?> ms</td>
+                                    <td><?php echo esc_html( (string) ( $pattern['max_ms'] ?? 0 ) ); ?> ms</td></tr>
+                            <?php endforeach; ?></tbody></table>
+                            <p class="description">A high repeat count is evidence for further review, not proof of redundant SQL. If query output depends on state, blindly caching or deduplicating it could break functionality. No raw statements or literal values are exported.</p>
+                        </details>
+                    <?php endif; ?>
+                    <?php if ( ! empty( $latest['sql_callsites'] ) ): ?>
+                        <details id="pfc-sql-callsite-inspector" open>
+                            <summary>SQL call-site inspector (administrator only, last verified request)</summary>
+                            <p class="description">Generated only on signed deep-profile requests. Maps SQL fingerprints to the invoking PHP method, component-relative source file and active WordPress hook. No SQL text, SQL parameters or absolute server paths are displayed here or included in the AI export. Call-site timings measure SQL execution, not the full PHP function. A missing trace is shown as unattributed rather than guessed.</p>
+                            <?php if ( ! empty( $latest['sql_callsites_truncated'] ) ): ?><p class="pfc-warning">The query trace or query-detail collection limit was reached. This attribution is incomplete.</p><?php endif; ?>
+                            <table class="widefat striped pfc-responsive-table">
+                                <thead><tr><th>Fingerprint / component</th><th>SQL calls / time</th><th>PHP call sites</th></tr></thead>
+                                <tbody>
+                                <?php foreach ( array_slice( (array) $latest['sql_callsites'], 0, 35 ) as $pattern ): ?>
+                                    <tr>
+                                        <td><code><?php echo esc_html( (string) ( $pattern['pattern_id'] ?? '' ) ); ?></code><br><small><?php echo esc_html( (string) ( $pattern['component'] ?? '' ) ); ?></small></td>
+                                        <td><?php echo intval( $pattern['count'] ?? 0 ); ?> calls<br><?php echo esc_html( (string) ( $pattern['total_ms'] ?? 0 ) ); ?> ms</td>
+                                        <td>
+                                            <?php if ( empty( $pattern['sites'] ) ): ?>No source call site identified<?php endif; ?>
+                                            <?php foreach ( array_slice( (array) ( $pattern['sites'] ?? array() ), 0, 6 ) as $site ): ?>
+                                                <div style="margin-bottom:9px"><strong><code><?php echo esc_html( (string) ( $site['callable'] ?? 'unknown' ) ); ?></code></strong><br>
+                                                <small><code><?php echo esc_html( (string) ( $site['file'] ?? '' ) ); ?></code>:<?php echo intval( $site['line'] ?? 0 ); ?> · Hook: <code><?php echo esc_html( (string) ( $site['hook'] ?? 'unavailable' ) ); ?></code> · <?php echo intval( $site['count'] ?? 0 ); ?> calls · <?php echo esc_html( (string) ( $site['total_ms'] ?? 0 ) ); ?> ms</small></div>
+                                            <?php endforeach; ?>
+                                            <?php if ( ! empty( $pattern['unattributed_count'] ) ): ?><small><?php echo intval( $pattern['unattributed_count'] ); ?> call(s) with no attributable stack</small><?php endif; ?>
+                                            <?php if ( ! empty( $pattern['other_sites_count'] ) ): ?><br><small>Calls from additional sites omitted by safety limit: <?php echo intval( $pattern['other_sites_count'] ); ?></small><?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                            <p class="description">Follow the named function in the owning plugin before changing any query. Repeated fingerprint counts alone do not prove that a query can be removed or cached safely.</p>
+                        </details>
+                    <?php endif; ?>
+                    <?php $callback_run = (array) end( $cruns ); $callback_info = (array) ( $callback_run['callback_profile'] ?? array() ); $bricks_info = (array) ( $callback_run['bricks_profile'] ?? array() ); ?>
+                    <p class="description"><strong>Cache attribution capability:</strong> <?php $capability = (array) ( $callback_run['cache_attribution_capability'] ?? array() ); echo esc_html( (string) ( $capability['mode'] ?? 'not evaluated' ) ); ?>. WordPress cache GET counters can be measured during selected callbacks, but generic per-operation source attribution and Redis network timings are unavailable without supported drop-in instrumentation.</p>
+                    <?php if ( ! empty( $callback_info['enabled'] ) ): ?>
+                    <div class="pfc-box" id="php-callback-inspector">
+                        <h4>PHP Hook and Callback Inspector</h4>
+                        <p>Measured only on explicitly selected, signed request probes. Self times subtract other instrumented nested callbacks; inclusive times may overlap. Uninstrumented nested work remains attributed to its containing callback.</p>
+                        <?php $bricks_rows = array_values( array_filter( (array) ( $callback_info['rows'] ?? array() ), static function ( $r ) { return 'theme:bricks' === (string) ( $r['component'] ?? '' ); } ) );
+                            $bricks_self = array_sum( array_map( static function ( $r ) { return (float) ( $r['self_ms'] ?? 0 ); }, $bricks_rows ) );
+                            $bricks_lookups = array_sum( array_map( static function ( $r ) { return (int) ( $r['cache_get_lookups'] ?? 0 ); }, $bricks_rows ) ); ?>
+                        <p><strong>Bricks callback evidence:</strong> <?php echo intval( count( $bricks_rows ) ); ?> measured callback(s) · <?php echo esc_html( (string) round( $bricks_self, 2 ) ); ?> ms self time · <?php echo intval( $bricks_lookups ); ?> cache GET counter changes within measured scopes. These are partial measurements, not total Bricks rendering time.</p>
+                        <p><strong>Instrumented:</strong> <?php echo intval( $callback_info['callbacks_wrapped'] ?? 0 ); ?> callbacks · <strong>Hooks observed:</strong> <?php echo intval( $callback_info['hooks_fired'] ?? 0 ); ?> · <strong>Reference callbacks skipped:</strong> <?php echo intval( $callback_info['reference_callbacks_skipped'] ?? 0 ); ?> · <strong>Profiler bookkeeping lower bound:</strong> <?php echo esc_html( (string) ( $callback_info['bookkeeping_lower_bound_ms'] ?? 0 ) ); ?> ms.</p>
+                        <?php $cb_rows = array_slice( (array) ( $callback_info['rows'] ?? array() ), 0, 20 ); ?>
+                        <?php if ( $cb_rows ): ?>
+                        <table class="widefat striped pfc-responsive-table"><thead><tr><th>Hook and callback</th><th>Component</th><th>Calls</th><th>Self PHP</th><th>Inclusive PHP</th><th>Cache GETs in scope</th></tr></thead><tbody>
+                        <?php foreach ( $cb_rows as $cb ): ?>
+                            <tr><td><code><?php echo esc_html( (string) ( $cb['hook'] ?? '' ) ); ?></code><br><strong><?php echo esc_html( (string) ( $cb['callback'] ?? '' ) ); ?></strong><br><small><?php echo esc_html( (string) ( $cb['file'] ?? '' ) ); ?>:<?php echo intval( $cb['line'] ?? 0 ); ?></small></td><td><?php echo esc_html( (string) ( $cb['component'] ?? '' ) ); ?></td><td><?php echo intval( $cb['calls'] ?? 0 ); ?></td><td><?php echo esc_html( (string) ( $cb['self_ms'] ?? 0 ) ); ?> ms</td><td><?php echo esc_html( (string) ( $cb['inclusive_ms'] ?? 0 ) ); ?> ms</td><td><?php echo isset( $cb['cache_get_lookups'] ) ? intval( $cb['cache_get_lookups'] ) : 'Not exposed'; ?></td></tr>
+                        <?php endforeach; ?>
+                        </tbody></table>
+                        <?php else: ?><p>No allowlisted callback executed within the sampled request. This is incomplete coverage, not evidence of zero PHP rendering work.</p><?php endif; ?>
+                        <p class="description">Cache GETs are deltas of public WordPress hit/miss counters observed during a timed callback. They are not Redis commands or measured Redis time. Instrumentation adds overhead, and reference callbacks are intentionally not wrapped. Coverage is limited to selected hooks, including Bricks rendering hooks where present.</p>
+                    </div>
+                    <?php endif; ?>
+                    <?php if ( ! empty( $bricks_info['enabled'] ) ): ?>
+                    <div class="pfc-box" id="pfc-bricks-query-render">
+                        <h4>Bricks Query and Render Inspector</h4>
+                        <p><strong>Bricks-origin WP_Query calls observed:</strong> <?php echo intval( $bricks_info['observed_bricks_queries'] ?? 0 ); ?> · <strong>Exact element matches:</strong> <?php echo intval( $bricks_info['exact_element_attributions'] ?? 0 ); ?> · <strong>Query samples dropped:</strong> <?php echo intval( $bricks_info['query_samples_dropped'] ?? 0 ); ?> · <strong>Missing completion hook:</strong> <?php echo intval( $bricks_info['unfinished_queries'] ?? 0 ); ?> · <strong>Instrumentation bookkeeping lower bound:</strong> <?php echo esc_html( (string) ( $bricks_info['bookkeeping_lower_bound_ms'] ?? 0 ) ); ?> ms.</p>
+                        <p class="description">The Bricks result filter permits exact WP_Query-to-element matching when supported by this Bricks version. Short element IDs appear only on this administrator page and are not included in AI exports. A missing completion hook is an instrumentation gap, not evidence of a failed query. SQL, query and callback elapsed times can overlap.</p>
+                        <?php $completion = (array) ( $bricks_info['query_completion'] ?? array() ); ?>
+                        <p><strong>Query lifecycle:</strong> <?php echo intval( $completion['the_posts'] ?? 0 ); ?> completed at <code>the_posts</code> · <?php echo intval( $completion['bricks_result_fallback'] ?? 0 ); ?> at Bricks result fallback · <?php echo intval( $completion['bricks_result_object_matched'] ?? 0 ); ?> result-object matches · <?php echo intval( $completion['no_completion_hook'] ?? 0 ); ?> with no observed end hook.</p>
+                        <?php $unclosed = (array) ( $bricks_info['unclosed_query_evidence'] ?? array() );
+                            $unclosed_counts = (array) ( $unclosed['categories'] ?? array() ); ?>
+                        <?php if ( $unclosed_counts ): ?>
+                        <details><summary><strong>Unclosed query investigation</strong> (<?php echo intval( $completion['no_completion_hook'] ?? 0 ); ?> scopes)</summary>
+                            <p>These are missing instrumentation endpoints, not query failures. Classification is based only on safe state available at probe shutdown; a suppressed-filter flag is a possible explanation, not confirmation.</p>
+                            <p><strong>Suppressed-filter candidates:</strong> <?php echo intval( $unclosed_counts['filters_suppressed_candidate'] ?? 0 ); ?> · <strong>Query objects released:</strong> <?php echo intval( $unclosed_counts['object_released'] ?? 0 ); ?> · <strong>Result objects still available:</strong> <?php echo intval( $unclosed_counts['results_present_without_hook'] ?? 0 ); ?> · <strong>State unknown:</strong> <?php echo intval( $unclosed_counts['no_result_state_observed'] ?? 0 ); ?> · <strong>Reused object IDs:</strong> <?php echo intval( $unclosed_counts['reused_object_id'] ?? 0 ); ?></p>
+                            <?php if ( ! empty( $unclosed['groups'] ) ): ?>
+                            <table class="widefat striped"><thead><tr><th>Bricks source / query shape</th><th>Observed state</th><th>Calls</th></tr></thead><tbody>
+                            <?php foreach ( array_slice( (array) $unclosed['groups'], 0, 15 ) as $gap ): ?>
+                            <tr><td><code><?php echo esc_html( (string) ( $gap['parent_scope'] ?? '' ) ); ?></code> · <code><?php echo esc_html( (string) ( $gap['shape_group'] ?? '' ) ); ?></code><br><small><?php echo esc_html( implode( ', ', (array) ( (array) ( $gap['shape'] ?? array() ) )['post_types'] ?? array() ) ); ?>, <?php echo intval( ( (array) ( $gap['shape'] ?? array() ) )['posts_per_page'] ?? 0 ); ?> requested</small></td><td><?php echo esc_html( str_replace( '_', ' ', (string) ( $gap['category'] ?? '' ) ) ); ?></td><td><?php echo intval( $gap['calls'] ?? 0 ); ?></td></tr>
+                            <?php endforeach; ?>
+                            </tbody></table><?php endif; ?>
+                        </details>
+                        <?php endif; ?>
+                        <?php $initialization = (array) ( $bricks_info['initialization_breakdown'] ?? array() ); ?>
+                        <?php if ( $initialization ): ?>
+                        <h5>Bricks initialization: callback time compared with child query work</h5>
+                        <table class="widefat striped pfc-responsive-table"><thead><tr><th>Callback scope</th><th>Callback elapsed</th><th>Observed query scopes</th><th>Difference</th><th>Cache GETs in callback / query scopes</th></tr></thead><tbody>
+                        <?php foreach ( $initialization as $block ): ?>
+                        <tr><td><code><?php echo esc_html( (string) ( $block['scope'] ?? '' ) ); ?></code><br><small><code><?php echo esc_html( (string) ( $block['callback_file'] ?? '' ) ); ?>:<?php echo intval( $block['callback_line'] ?? 0 ); ?></code></small></td>
+                        <td><?php echo esc_html( (string) ( $block['callback_inclusive_ms'] ?? 0 ) ); ?> ms</td>
+                        <td><?php echo esc_html( (string) ( $block['observed_child_query_ms'] ?? 0 ) ); ?> ms (<?php echo intval( $block['child_queries'] ?? 0 ); ?> query scopes; <?php echo esc_html( (string) ( $block['observed_child_sql_ms'] ?? 0 ) ); ?> ms SQL)</td>
+                        <td><?php echo isset( $block['callback_minus_observed_queries_ms'] ) ? esc_html( (string) $block['callback_minus_observed_queries_ms'] ) . ' ms' : 'Not comparable'; ?></td>
+                        <td><?php echo isset( $block['cache_get_lookups_during_callback'] ) ? intval( $block['cache_get_lookups_during_callback'] ) : 'n/a'; ?> / <?php echo isset( $block['cache_get_lookups_during_child_queries'] ) ? intval( $block['cache_get_lookups_during_child_queries'] ) : 'n/a'; ?></td></tr>
+                        <?php endforeach; ?></tbody></table>
+                        <p class="description">The difference is an arithmetic comparison, not exclusive PHP time and not a guaranteed optimization opportunity. Query scopes may overlap and uninstrumented nested work remains in the callback total.</p>
+                        <?php endif; ?>
+                        <?php $accessors = (array) ( $bricks_info['initialization_accessor_profile'] ?? array() ); ?>
+                        <?php if ( ! empty( $accessors['enabled'] ) ): ?>
+                        <h5>Bricks initialization: selected metadata and option accessors</h5>
+                        <p>Bounded, read-only WordPress metadata and option filters observed while the two callback scopes execute. Repeated anonymous groups are <strong>not</strong> Redis commands or complete cache attribution. Counts can overlap queries.</p>
+                        <p><strong>Accessor events observed:</strong> <?php echo intval( $accessors['observed_events'] ?? 0 ); ?> of a maximum <?php echo intval( $accessors['event_limit'] ?? 0 ); ?>; <strong>Skipped after limit:</strong> <?php echo intval( $accessors['events_skipped_at_limit'] ?? 0 ); ?>.</p>
+                        <table class="widefat striped pfc-responsive-table"><thead><tr><th>Callback</th><th>Post metadata</th><th>Term metadata</th><th>User metadata</th><th>Option accessors</th><th>Anonymous key groups / overflow</th></tr></thead><tbody>
+                        <?php foreach ( (array) ( $accessors['scopes'] ?? array() ) as $scope ): ?>
+                        <tr><td><code><?php echo esc_html( (string) ( $scope['scope'] ?? '' ) ); ?></code></td>
+                        <td><?php echo intval( $scope['post_metadata_calls'] ?? 0 ); ?></td>
+                        <td><?php echo intval( $scope['term_metadata_calls'] ?? 0 ); ?></td>
+                        <td><?php echo intval( $scope['user_metadata_calls'] ?? 0 ); ?></td>
+                        <td><?php echo intval( $scope['option_calls'] ?? 0 ); ?></td>
+                        <td><?php echo intval( $scope['hashed_accessor_groups_observed'] ?? 0 ); ?> / <?php echo intval( $scope['other_or_untracked_keys'] ?? 0 ); ?></td></tr>
+                        <?php endforeach; ?></tbody></table>
+                        <?php foreach ( (array) ( $accessors['scopes'] ?? array() ) as $scope ): ?>
+                        <?php if ( ! empty( $scope['top_accessor_groups'] ) ): ?>
+                        <details><summary>Repeated accessor keys and source hints in <?php echo esc_html( (string) ( $scope['scope'] ?? '' ) ); ?> (administrator only)</summary>
+                        <p class="description">Names resembling secrets are masked. An accessor name may be used for many objects; counts are not unique cache keys or Redis commands. Object diversity counts stop at 128 samples per group. *Repeat counts mean the same key/object appeared again within the bounded sample, not that Redis performed an unnecessary operation.</p>
+                        <div class="pfc-scroll-x"><table class="widefat striped"><thead><tr><th>Kind</th><th>Key name (local)</th><th>Hashed group</th><th>Calls</th><th>Distinct objects sampled</th><th>Repeat key/object observations*</th><th>Source hint (sampled once)</th></tr></thead><tbody>
+                        <?php foreach ( array_slice( (array) $scope['top_accessor_groups'], 0, 12 ) as $group ): ?>
+                        <tr><td><?php echo esc_html( (string) ( $group['kind'] ?? '' ) ); ?></td><td><code><?php echo esc_html( (string) ( $group['key_local'] ?? '[unavailable]' ) ); ?></code></td><td><code><?php echo esc_html( (string) ( $group['key_group'] ?? '' ) ); ?></code></td><td><?php echo intval( $group['calls'] ?? 0 ); ?></td><td><?php echo intval( $group['distinct_objects_sampled'] ?? 0 ); ?><?php echo !empty($group['distinct_object_limit_reached'])?' +':''; ?></td><td><?php echo intval( $group['repeat_object_hits_sampled'] ?? 0 ); ?><?php echo !empty($group['distinct_object_limit_reached'])?' (partial)':''; ?></td><td><code><?php echo esc_html( (string) ( $group['callsite_local'] ?? 'unavailable' ) ); ?></code></td></tr>
+                        <?php endforeach; ?></tbody></table></div></details>
+                        <?php endif; endforeach; ?>
+                        <?php endif; ?>
+                        <?php $priority_elements = PFC_Bricks_Inspector::priority_review_rows( $cruns ); ?>
+                        <?php if ( $priority_elements ): ?>
+                        <h5>Priority Bricks query-loop elements: first request versus later requests</h5>
+                        <p>Ranked by <strong>first verified request SQL</strong>, not the last warmed request. Matching requires the same anonymous query shape and exact Bricks element group on subsequent requests. Raw short IDs remain administrator-only. Suggested checks are hypotheses, not confirmed optimizations.</p>
+                        <table class="widefat striped pfc-responsive-table"><thead><tr><th>Bricks element ID</th><th>Query shape</th><th>First-run SQL / elapsed</th><th>Later median SQL / elapsed</th><th>Configuration checks</th></tr></thead><tbody>
+                        <?php foreach ( $priority_elements as $qr ): $shape = (array) ( $qr['shape'] ?? array() ); ?>
+                        <tr><td><strong><code>brxe-<?php echo esc_html( (string) $qr['element_id_local'] ); ?></code></strong></td>
+                        <td><?php echo esc_html( implode( ', ', (array) ( $shape['post_types'] ?? array() ) ) ); ?> · <?php echo intval( $shape['posts_per_page'] ?? 0 ); ?> requested · <?php echo intval( $shape['tax_clauses'] ?? 0 ); ?> taxonomy clause(s)</td>
+                        <td><?php echo isset( $qr['first_sql_ms'] ) ? esc_html( (string) $qr['first_sql_ms'] ) . ' ms' : 'n/a'; ?> SQL / <?php echo isset( $qr['first_elapsed_ms'] ) ? esc_html( (string) $qr['first_elapsed_ms'] ) . ' ms' : 'n/a'; ?> elapsed</td>
+                        <td><?php echo isset( $qr['later_median_sql_ms'] ) ? esc_html( (string) $qr['later_median_sql_ms'] ) . ' ms' : 'not matched'; ?> SQL / <?php echo isset( $qr['later_median_elapsed_ms'] ) ? esc_html( (string) $qr['later_median_elapsed_ms'] ) . ' ms' : 'not matched'; ?> elapsed<br><small><?php echo intval( $qr['following_runs_matched'] ); ?> following run(s) matched</small></td>
+                        <td><?php echo esc_html( implode( '; ', (array) ( $qr['signals'] ?? array() ) ) ); ?></td></tr>
+                        <?php endforeach; ?></tbody></table>
+                        <p class="description">Start with the first two mixed post/review sections and the three-taxonomy-clause query. Check AND/OR relationships, pagination and cache behaviour on staging; validate that published content, sorting, and homepage layout remain unchanged.</p>
+                        <?php endif; ?>
+                        <?php $hot_phases = (array) ( $bricks_info['parent_callback_query_scopes'] ?? array() ); ?>
+                        <?php if ( $hot_phases ): ?><p><strong>Bricks callback-path query evidence:</strong> <?php foreach ( $hot_phases as $phase ): ?> <code><?php echo esc_html( (string) ( $phase['scope'] ?? '' ) ); ?></code>: <?php echo intval( $phase['query_calls'] ?? 0 ); ?> query scopes, <?php echo esc_html( (string) ( $phase['observed_query_elapsed_ms'] ?? 0 ) ); ?> ms observed query elapsed, <?php echo esc_html( (string) ( $phase['observed_sql_ms'] ?? 0 ) ); ?> ms SQL; <?php endforeach; ?></p><p class="description">These totals represent observed child query intervals, not the complete assets/elements callback execution time. Nested scopes can overlap.</p><?php endif; ?>
+                        <?php $element_hints = array_slice( (array) ( $bricks_info['observed_bricks_element_ids_local'] ?? array() ), 0, 16 ); ?>
+                        <?php if ( $element_hints ): ?><p><strong>Query-loop elements observed through Bricks (admin only):</strong> <?php foreach ( $element_hints as $hint ): ?><code>brxe-<?php echo esc_html( (string) $hint ); ?></code> <?php endforeach; ?></p><p class="description">This is a list of observed element IDs, not a claimed match to every WordPress query. Look up these IDs in the Bricks builder. IDs are removed from AI exports.</p><?php endif; ?>
+                        <?php $bq = array_slice( (array) ( $bricks_info['query_groups'] ?? array() ), 0, 15 ); ?>
+                        <?php if ( $bq ): ?>
+                        <table class="widefat striped pfc-responsive-table"><thead><tr><th>Query shape and origin</th><th>Calls / results</th><th>Elapsed</th><th>SQL</th><th>Cache lookups during scope</th></tr></thead><tbody>
+                        <?php foreach ( $bq as $qr ): ?><tr>
+                            <td><code><?php echo esc_html( (string) ( $qr['shape_group'] ?? '' ) ); ?></code><br><small><?php echo esc_html( (string) ( ( (array) ( $qr['origin'] ?? array() ) )['source'] ?? '' ) ); ?> · <?php echo esc_html( (string) ( ( (array) ( $qr['origin'] ?? array() ) )['function'] ?? '' ) ); ?></small><br><small><?php echo esc_html( implode( ', ', (array) ( ( (array) ( $qr['shape'] ?? array() ) )['post_types'] ?? array() ) ) ); ?> · element group <?php echo esc_html( (string) ( $qr['element_group'] ?: 'not exposed' ) ); ?><?php if ( ! empty( $qr['element_id_local'] ) ): ?> · <strong>Bricks ID: brxe-<?php echo esc_html( (string) $qr['element_id_local'] ); ?></strong><?php endif; ?> · <?php echo esc_html( (string) ( $qr['parent_scope'] ?? 'other-bricks' ) ); ?> · <?php echo esc_html( (string) ( $qr['completion_method'] ?? 'unknown' ) ); ?></small></td>
+                            <td><?php echo intval( $qr['calls'] ?? 0 ); ?> / <?php echo intval( $qr['result_count'] ?? 0 ); ?></td>
+                            <td><?php echo esc_html( (string) ( $qr['elapsed_ms'] ?? 0 ) ); ?> ms</td>
+                            <td><?php echo isset( $qr['sql_ms'] ) ? esc_html( (string) $qr['sql_ms'] ) . ' ms' : 'Not available'; ?> (<?php echo isset( $qr['sql_queries'] ) ? intval( $qr['sql_queries'] ) : 'n/a'; ?> queries)</td>
+                            <td><?php echo isset( $qr['cache_lookups'] ) ? intval( $qr['cache_lookups'] ) : 'Not exposed'; ?></td>
+                        </tr><?php endforeach; ?></tbody></table>
+                        <?php else: ?><p>No Bricks-origin WP_Query calls were observed in this sample. This does not establish that Bricks ran no queries or rendered no elements.</p><?php endif; ?>
+                        <?php $br = array_slice( (array) ( $bricks_info['render_groups'] ?? array() ), 0, 15 ); ?>
+                        <h5>Observed Bricks render-hook scopes</h5>
+                        <?php if ( $br ): ?><table class="widefat striped"><thead><tr><th>Hook / element type</th><th>Calls</th><th>Hook callback time</th><th>Cache lookups</th></tr></thead><tbody>
+                        <?php foreach ( $br as $rr ): ?><tr><td><?php echo esc_html( (string) ( $rr['hook'] ?? '' ) ); ?><br><small><?php echo esc_html( (string) ( $rr['element_type'] ?? 'unknown' ) ); ?> · <?php echo esc_html( (string) ( $rr['element_group'] ?: 'no element marker' ) ); ?></small></td><td><?php echo intval( $rr['calls'] ?? 0 ); ?></td><td><?php echo esc_html( (string) ( $rr['elapsed_ms'] ?? 0 ) ); ?> ms</td><td><?php echo isset( $rr['cache_lookups'] ) ? intval( $rr['cache_lookups'] ) : 'Not exposed'; ?></td></tr><?php endforeach; ?></tbody></table>
+                        <?php else: ?><p>None of the selected Bricks render hooks executed between the inspector start/end listeners, or no completed groups were observed. This is an instrumentation coverage limit.</p><?php endif; ?>
+                        <p class="description">Render-hook scopes observed: <?php echo intval( array_sum( (array) ( $bricks_info['render_hook_fires'] ?? array() ) ) ); ?>. Collapsed into type-level totals: <?php echo intval( $bricks_info['render_samples_aggregated'] ?? 0 ); ?>. Dropped: <?php echo intval( $bricks_info['render_samples_dropped'] ?? 0 ); ?>. Hook callbacks are not full element-render timings.</p>
+                        <?php if ( ! empty( $bricks_info['query_rows_omitted'] ) || ! empty( $bricks_info['render_rows_omitted'] ) || ! empty( $bricks_info['render_samples_dropped'] ) ): ?><p class="description">Some rows were omitted to bound profiling overhead and stored diagnostic data.</p><?php endif; ?>
+                    </div>
+                    <?php endif; ?>
+                    <?php if ( is_array( $cache_previous ) && ! empty( $cache_previous['runs'] ) && ! empty( $cp['runs'] ) && (string) ( $cache_previous['url'] ?? '' ) === (string) ( $cp['url'] ?? '' ) && count( (array) $cache_previous['runs'] ) === count( (array) $cp['runs'] ) && count( (array) $cp['runs'] ) >= 3 && (bool) ( $cache_previous['probe_meta']['callback_profiling_requested'] ?? false ) === (bool) ( $cp['probe_meta']['callback_profiling_requested'] ?? false ) && (int) ( $cache_previous['probe_meta']['verified'] ?? 0 ) === (int) ( $cache_previous['probe_meta']['requested'] ?? -1 ) && (int) ( $cp['probe_meta']['verified'] ?? 0 ) === (int) ( $cp['probe_meta']['requested'] ?? -1 ) ): ?>
+                        <?php
+                            $before_php = array_map( 'floatval', array_column( (array) $cache_previous['runs'], 'php_ms' ) );
+                            $after_php = array_map( 'floatval', array_column( (array) $cp['runs'], 'php_ms' ) );
+                            $before_sql = array_map( 'floatval', array_column( (array) $cache_previous['runs'], 'db_ms' ) );
+                            $after_sql = array_map( 'floatval', array_column( (array) $cp['runs'], 'db_ms' ) );
+                            $delta_php = round( PFC_Utils::median( $after_php ) - PFC_Utils::median( $before_php ), 1 );
+                            $delta_sql = round( PFC_Utils::median( $after_sql ) - PFC_Utils::median( $before_sql ), 1 );
+                        ?>
+                        <div class="pfc-box" id="pfc-compare-repairs"><h4>Before/after profile comparison</h4>
+                            <p>Same URL and same number of verified requests. PHP median change: <strong><?php echo esc_html( ( $delta_php >= 0 ? '+' : '' ) . $delta_php ); ?> ms</strong>; SQL median change: <strong><?php echo esc_html( ( $delta_sql >= 0 ? '+' : '' ) . $delta_sql ); ?> ms</strong>.</p>
+                            <p class="description">Negative means faster in the second profile. Diagnostic overhead, warm/cold cache state and content changes can affect results. This is an observation, not proof of a causal repair.</p>
+                        </div>
+                    <?php endif; ?>
+                    <div class="pfc-box" id="pfc-repair-centre"><h4>Workload repair centre</h4>
+                        <p>Only actions with a safe, bounded implementation run automatically. Changes to other plugins' HTTP requests, SQL or cache policies require owner-specific review. Each finding includes a guided next step.</p>
+                        <?php $workload_findings = PFC_Workload_Advisor::findings( $cruns, PFC_Scanner::cached_scan() ); ?>
+                        <?php if ( ! $workload_findings ): ?><p>No repeatable high-signal findings from these verified requests. Repeat on the affected route and check ordinary (uninstrumented) performance as well.</p><?php endif; ?>
+                        <?php foreach ( $workload_findings as $finding ): ?>
+                            <div class="pfc-priority-item">
+                                <span class="pfc-status pfc-status--<?php echo esc_attr( $finding['severity'] ); ?>"><?php echo esc_html( strtoupper( (string) $finding['severity'] ) ); ?></span>
+                                <div class="pfc-priority-item__body">
+                                    <strong><?php echo esc_html( $finding['title'] ); ?></strong>
+                                    <p><?php echo esc_html( $finding['evidence'] ); ?></p>
+                                    <p><strong>Repair guidance:</strong> <?php echo esc_html( $finding['recommendation'] ); ?></p>
+                                    <?php if ( 'transients' === $finding['action'] && 'bounded_cleanup' === $finding['repair'] ): ?>
+                                        <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                                            <input type="hidden" name="action" value="pfc_expired_transients">
+                                            <?php wp_nonce_field( 'pfc_transients' ); ?>
+                                            <label><input type="checkbox" required name="confirm_expired_cleanup" value="1"> I understand this deletes up to 1,000 already-expired transients and cannot undo those deletions.</label>
+                                            <button class="button">Clean expired transients (bounded)</button>
+                                        </form>
+                                    <?php elseif ( 'sql' === $finding['action'] || 'cache' === $finding['action'] || 'http' === $finding['action'] ): ?>
+                                        <a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=profiling#profiling' ) ); ?>">Open plugin impact A/B testing</a>
+                                    <?php elseif ( 'autoload' === $finding['action'] ): ?>
+                                        <a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=database#database-repair-centre' ) ); ?>">Review reversible autoload changes</a>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <h4>Interpretation</h4><ul><?php foreach ( (array) ( $cp['guidance'] ?? array() ) as $advice ): ?><li><?php echo esc_html( (string) $advice ); ?></li><?php endforeach; ?></ul>
+                <?php endif; ?>
+            </div>
+            <div class="pfc-box" id="pfc-http-self-test">
+                <h3>HTTP Collector Verification</h3>
+                <p>Perform one bounded, administrator-triggered request to this site's WordPress REST index to verify that the HTTP instrumentation sees a real request. No external API endpoint or credentials are used.</p>
+                <form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                    <input type="hidden" name="action" value="pfc_http_self_test">
+                    <?php wp_nonce_field( 'pfc_http_self_test' ); ?>
+                    <button class="button" type="submit">Verify HTTP collector (local loopback)</button>
+                </form>
+                <?php if ( is_array( $http_self_test ) ): ?>
+                    <p><strong>Collector:</strong> <?php echo ! empty( $http_self_test['collector_observed'] ) ? 'Captured HTTP API call' : 'Did not capture a call'; ?> · <strong>Response:</strong> <?php echo isset( $http_self_test['response_status'] ) ? intval( $http_self_test['response_status'] ) : 'No HTTP response'; ?> · <strong>Elapsed:</strong> <?php echo esc_html( (string) ( $http_self_test['elapsed_ms'] ?? '' ) ); ?> ms.</p>
+                    <p class="description">A successful self-test validates hook collection for this local request only; it does not prove AAWP or other plugins issued remote calls in the homepage profile.</p>
+                <?php endif; ?>
+            </div>
+            <div class="pfc-box" id="object-cache-pro-troubleshooter">
+                <h3>Object Cache Pro Troubleshooter</h3>
+                <p>Dedicated, administrator-only checks for native health status, Key Tracking, ACL command capabilities, cached group inventory, passive flush attempts and serialization options. Where the active drop-in does not provide a supported instrumentation interface, the report explicitly marks that information unavailable.</p>
+                <?php $ocp = (array) ( $cache_diagnostic['object_cache_pro'] ?? array() ); ?>
+                <?php $last_ocp_profile = (array) ( $cache_profile['runs'] ?? array() ); $last_ocp_profile = $last_ocp_profile ? (array) end( $last_ocp_profile ) : array(); $ocp_callback_rows = (array) ( $last_ocp_profile['callback_profile']['rows'] ?? array() ); usort( $ocp_callback_rows, static function ( $a, $b ) { return (int)($b['cache_get_lookups']??$b['cache_get_lookups_during_scope']??0) <=> (int)($a['cache_get_lookups']??$a['cache_get_lookups_during_scope']??0); } ); ?>
+                <details><summary><strong>Cache call attribution (verified callback scopes)</strong></summary>
+                    <?php if ( ! $ocp_callback_rows ): ?><p>No deep PHP callback profile available. Run a signed profile with deep PHP enabled to collect bounded callback cache-counter changes.</p><?php else: ?>
+                        <table class="widefat striped"><thead><tr><th>Component</th><th>Hook</th><th>WordPress cache GET lookups during scope</th><th>Inclusive PHP time</th></tr></thead><tbody><?php foreach(array_slice($ocp_callback_rows,0,12) as $r): ?><tr><td><?php echo esc_html((string)($r['component']??'unknown')); ?></td><td><code><?php echo esc_html((string)($r['hook']??'unknown')); ?></code></td><td><?php echo isset($r['cache_get_lookups']) || isset($r['cache_get_lookups_during_scope']) ? esc_html(number_format_i18n((int)($r['cache_get_lookups']??$r['cache_get_lookups_during_scope']))) : 'Not measured'; ?></td><td><?php echo isset($r['inclusive_ms']) || isset($r['inclusive_php_ms']) ? esc_html((string)($r['inclusive_ms']??$r['inclusive_php_ms'])) . ' ms' : 'Not measured'; ?></td></tr><?php endforeach; ?></tbody></table>
+                    <?php endif; ?>
+                    <p class="description">These are WordPress cache hit/miss counter changes within specific callback scopes. They are not individual Redis GET calls or exclusive cache-processing time. Nested callback scopes may overlap.</p>
+                </details>
+                <?php if ( ! $ocp ): ?>
+                    <p class="description">Run Redis, Autoload &amp; Object Cache Pro Diagnostics below to populate this panel. Flush attempts will be collected only after the new plugin version is active and Object Cache Pro is detected.</p>
+                <?php else: ?>
+                    <?php $od=(array)($ocp['detection']??array()); $health=(array)($ocp['health_checks']??array()); $tracking=(array)($ocp['key_tracking_diagnostics']??array()); $acl=(array)($ocp['acl_diagnostics']??array()); $groups=(array)($ocp['cache_group_metrics']??array()); $serial=(array)($ocp['serialization_benchmarks']??array()); ?>
+                    <section class="pfc-native-tracking" id="pfc-ocp-native-tracking" aria-label="Native Object Cache Pro Key Tracking diagnosis">
+                        <h4>Native Key Tracking diagnosis <span class="pfc-tracking-priority">P0 investigation</span></h4>
+                        <p class="description">Checks Object Cache Pro's WordPress Site Health Info data and registered status tests, when exposed. Never assumes that Redis CLIENT TRACKINGINFO describes Object Cache Pro's key tracking.</p>
+                        <div class="pfc-tracking-status-grid">
+                            <div><span class="pfc-tracking-label">Tracking evidence</span><strong><?php echo esc_html( str_replace('_',' ', (string)($tracking['status']??'not tested') ) ); ?></strong></div>
+                            <div><span class="pfc-tracking-label">Evidence source</span><strong><?php echo esc_html( str_replace('_',' ', (string)($tracking['source']??'none') ) ); ?></strong></div>
+                            <div><span class="pfc-tracking-label">Failure category</span><strong><?php echo esc_html( str_replace('_',' ', (string)($tracking['failure_category']??'unknown') ) ); ?></strong><small>Based only on native result text, when available</small></div>
+                        </div>
+                        <p class="description">Source: <?php echo esc_html( str_replace('_',' ', (string)($tracking['source']??'none') ) ); ?> · confidence: <?php echo esc_html( str_replace('_',' ', (string)($tracking['confidence']??'unavailable') ) ); ?>.</p>
+                        <p class="description"><strong>Native diagnostic detail:</strong> <?php echo esc_html(str_replace('_',' ',(string)($tracking['detail_level']??'not exposed'))); ?>. A status-only <code>Error</code> cannot identify which Redis operation failed.</p>
+                        <?php $triage=(array)($ocp['key_tracking_triage']??array()); ?>
+                        <div class="pfc-ocp-triage" aria-label="Native Key Tracking root-cause evidence">
+                            <h5>What the evidence actually establishes</h5>
+                            <p><strong>Root-cause status:</strong> <?php echo esc_html(str_replace('_',' ',(string)($triage['status']??'not tested'))); ?>. <strong>Exact failed command:</strong> not identified by these public interfaces.</p>
+                            <p class="description">Native status is <?php echo !empty($triage['native_evidence'])?'confirmed by Site Health':'not yet confirmed by native Site Health'; ?>. When Site Health supplies only “Error,” there is no Redis error text to categorize. No Redis permission changes are justified by this field alone.</p>
+                            <div class="pfc-ocp-triage-grid">
+                            <?php foreach((array)($triage['read_only_capabilities']??array()) as $command=>$result): ?>
+                                <div><code><?php echo esc_html((string)$command); ?></code><strong><?php echo esc_html(str_replace('_',' ',(string)$result)); ?></strong></div>
+                            <?php endforeach; ?>
+                            </div>
+                            <p class="description">The separate ACL WHOAMI and CLIENT TRACKINGINFO probes are optional informational checks, <strong>not</strong> a reproduction of Object Cache Pro's key-tracking health test. If the category remains unknown, the next step is the provider's native diagnostic details, not a broader ACL.</p>
+                            <?php $operator_evidence = (array) ( $triage['administrator_report'] ?? array() ); ?>
+                            <?php if ( $operator_evidence ): ?>
+                            <p><strong>Administrator-reported native CLI details:</strong> <?php echo esc_html(str_replace('_',' ',(string)($operator_evidence['category']??'unknown'))); ?> · command <?php echo esc_html((string)($operator_evidence['command']??'NOT_IDENTIFIED')); ?>. <small>Not independently verified by Performance Console.</small></p>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ( in_array( (string)($tracking['status']??''), array('native_error','reported_error'), true ) ): ?>
+                            <p><strong>Key Tracking error evidence is present.</strong> This does not identify the failing Redis command. Check the corresponding native diagnostic and grant only demonstrably required permissions, if any.</p>
+                        <?php elseif ( 'needs_native_health_result' === ($tracking['status']??'') ): ?>
+                            <p><strong>Native tracking status not available through the public WordPress hooks.</strong> The existing Redis ACL tests cannot establish the cause of the reported Key Tracking error.</p>
+                        <?php endif; ?>
+                        <details><summary>How to verify the exact native error</summary>
+                            <ol><li>Open <strong>Tools → Site Health → Info</strong>, expand the Object Cache Pro/Redis section, and find <strong>Key Tracking</strong>.</li>
+                            <li>For Object Cache Pro 1.x you can also run <code>wp redis diagnostics</code>. Object Cache Pro 2.x documents <code>wp objectcache diagnostics</code>. Do not paste entire CLI diagnostics into an AI export because they may contain configuration values.</li>
+                            <li>Record only the Key Tracking status below. If the status is Error, review the native diagnostic's error description locally before changing ACL rules.</li></ol>
+                        </details>
+                        <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post" class="pfc-tracking-report-form">
+                            <input type="hidden" name="action" value="pfc_ocp_tracking_report">
+                            <?php wp_nonce_field('pfc_ocp_tracking_report'); ?>
+                            <label for="pfc-tracking-reported"><strong>Record native diagnostic findings (no raw text)</strong></label>
+                            <select id="pfc-tracking-reported" name="tracking_status" required>
+                                <option value="" selected disabled>Select the exact result…</option><option value="reported_error">Error</option><option value="reported_warning">Warning</option>
+                                <option value="reported_ok">OK</option><option value="reported_disabled">Disabled / unavailable</option>
+                            </select>
+                            <label for="pfc-tracking-category"><strong>Cause described in native diagnostic (optional)</strong></label>
+                            <select id="pfc-tracking-category" name="tracking_category">
+                                <option value="unknown">Unknown / only says Error</option><option value="acl_denied">NOPERM / denied</option>
+                                <option value="authentication">Authentication failure</option><option value="unsupported_command">Unknown or unsupported command</option>
+                                <option value="connection_or_timeout">Connection / timeout</option><option value="memory_pressure">Memory pressure</option>
+                                <option value="read_only">Read-only replica</option><option value="other">Different category (not recorded as free text)</option>
+                            </select>
+                            <label for="pfc-tracking-command"><strong>Exact command named by native diagnostic (optional)</strong></label>
+                            <select id="pfc-tracking-command" name="tracking_command">
+                                <option value="NOT_IDENTIFIED">Not identified</option>
+                                <?php foreach ( array_slice( PFC_Object_Cache_Pro::reported_tracking_commands(), 1 ) as $cmd ): ?>
+                                    <option value="<?php echo esc_attr($cmd); ?>"><?php echo esc_html($cmd); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                            <label for="pfc-tracking-error-line"><strong>Optional: classify one native error line</strong></label>
+                            <textarea id="pfc-tracking-error-line" name="tracking_error_line" rows="2" maxlength="512" placeholder="Only a single sanitized error line, never a full diagnostic dump" autocomplete="off" spellcheck="false"></textarea>
+                            <p class="description">Processed once to classify fixed error categories and explicitly named commands. The line itself is discarded immediately, never saved, displayed, logged intentionally or included in AI exports. Leave blank if the native result is only “Error.”</p>
+                            <button type="submit" class="button">Save classified status only</button>
+                        </form>
+                        <p class="description">All administrator-reported details are explicitly labelled, expire after 24 hours, and cannot override confirmed native status or prove an ACL cause. Only selected categories and command names are stored. Never enter passwords, key names or diagnostic text.</p>
+                    </section>
+                    <details><summary><strong>Redis ACL and tracking capability checks</strong></summary>
+                        <p>Status: <?php echo esc_html((string)($acl['status']??'not tested')); ?>. These are optional, read-only Redis commands, not a full audit of current ACL permissions.</p>
+                        <table class="widefat striped"><thead><tr><th>Command</th><th>Result</th></tr></thead><tbody><?php foreach ((array)($acl['tests']??array()) as $command=>$a): ?><tr><td><code><?php echo esc_html((string)$command); ?></code></td><td><?php echo esc_html((string)($a['status']??'unknown')); ?></td></tr><?php endforeach; ?></tbody></table>
+                        <p class="description">A denied optional INFO, SCAN, ACL WHOAMI or CLIENT TRACKINGINFO command does not alone establish why Key Tracking reports an error. No ACL rules are altered.</p>
+                    </details>
+                    <details><summary><strong>Cache groups and memory</strong></summary>
+                        <p>Native Object Cache Pro REST inventory: <strong><?php echo esc_html((string)($groups['status']??'not run')); ?></strong>; memory estimates: <?php echo !empty($groups['memory_included'])?'included':'not measured'; ?>.</p>
+                        <?php if (!empty($groups['rows'])): ?><table class="widefat striped"><thead><tr><th>Group (allowlisted or anonymous)</th><th>Keys</th><th>Group bytes</th></tr></thead><tbody><?php foreach((array)$groups['rows'] as $g): ?><tr><td><?php echo esc_html((string)($g['group']??'other')); ?> <code><?php echo esc_html((string)($g['group_id']??'')); ?></code></td><td><?php echo isset($g['keys'])?intval($g['keys']):'n/a'; ?></td><td><?php echo isset($g['bytes'])?esc_html(size_format((int)$g['bytes'])):'Not measured'; ?></td></tr><?php endforeach; ?></tbody></table><?php endif; ?>
+                        <?php $growth=(array)($ocp['cache_group_growth']??array()); ?>
+                        <h5>Cache-group change since previous opt-in inventory</h5>
+                        <p>Comparison: <strong><?php echo esc_html(str_replace('_',' ',(string)($growth['status']??'not tested'))); ?></strong><?php if(isset($growth['elapsed_seconds'])): ?> · elapsed <?php echo intval($growth['elapsed_seconds']); ?> seconds<?php endif; ?>.</p>
+                        <?php if(!empty($growth['rows'])): ?><table class="widefat striped"><thead><tr><th>Group</th><th>Change in keys</th><th>Keys/hour (estimate)</th><th>Change in bytes</th></tr></thead><tbody><?php foreach((array)$growth['rows'] as $g): ?><tr><td><?php echo esc_html((string)($g['group']??'other')); ?> <code><?php echo esc_html((string)($g['group_id']??'')); ?></code></td><td><?php echo isset($g['delta_keys'])?esc_html(number_format_i18n($g['delta_keys'])):'Not measured'; ?></td><td><?php echo isset($g['keys_per_hour'])?esc_html(number_format_i18n($g['keys_per_hour'],1)):'Needs 5 min'; ?></td><td><?php echo isset($g['delta_bytes'])?esc_html(number_format_i18n($g['delta_bytes'])):'Not measured'; ?></td></tr><?php endforeach; ?></tbody></table><?php endif; ?>
+                        <p class="description">Rates require two separately run inventory scans at least five minutes apart. They are observed changes, not an eviction rate or proof of a leak.</p>
+                        <p class="description">The first opted-in inventory records a baseline. Future scans compare anonymized groups and never delete entries. Snapshot changes do not prove an active memory leak or an eviction rate.</p>
+                        <p class="description">OCP group inventory can be expensive, especially with memory estimates. Individual values and large-object contents are never read or exported.</p>
+                    </details>
+                    <details><summary><strong>Passive flush investigator</strong></summary>
+                        <?php $history=(array)PFC_Object_Cache_Pro::flush_history(); ?>
+                        <?php $flush_fresh = PFC_Object_Cache_Pro::flush_freshness($history); ?>
+                        <p><strong>Observed attempts in the last 10 minutes:</strong> <?php echo intval($flush_fresh['attempts_last_10_minutes']??0); ?>. <?php if(isset($flush_fresh['latest_event_age_seconds'])): ?>Latest event <?php echo intval($flush_fresh['latest_event_age_seconds']); ?> seconds ago.<?php endif; ?></p>
+                        <p class="description">Older stored events are historical and do not prove flushing is still happening. Caller names with no verified provenance are not proof of the source path.</p>
+                        <?php if (!$history): ?><p>No observed flush attempts since the passive hooks were enabled. This does not include older Object Cache Pro flush history.</p><?php else: ?><table class="widefat striped"><thead><tr><th>UTC</th><th>Type</th><th>Component</th><th>Caller</th><th>Source</th><th>Confidence</th></tr></thead><tbody><?php foreach(array_slice($history,-20) as $h): ?><tr><td><?php echo esc_html((string)($h['at_utc']??'')); ?></td><td><?php echo esc_html((string)($h['type']??'')); ?></td><td><?php echo esc_html((string)($h['component']??'')); ?></td><td><code><?php echo esc_html((string)($h['caller']??'')); ?></code></td><td><code><?php echo esc_html((string)($h['caller_source']??'unavailable')); ?></code></td><td><?php echo esc_html(str_replace('_',' ',(string)($h['caller_confidence']??'none'))); ?></td></tr><?php endforeach; ?></tbody></table><?php endif; ?>
+                        <?php $bursts = (array) ( $ocp['flush_bursts'] ?? array() ); ?>
+                        <?php if ( $bursts ): ?>
+                        <h5>Repeated attempts within 60 seconds</h5>
+                        <div class="pfc-scroll-x"><table class="widefat striped"><thead><tr><th>Component</th><th>Anonymous cache group</th><th>Observed attempts</th><th>Window</th></tr></thead><tbody>
+                        <?php foreach ( $bursts as $burst ): ?><tr><td><?php echo esc_html((string)($burst['component']??'unknown')); ?></td><td><code><?php echo esc_html((string)($burst['group_id']??'')); ?></code></td><td><?php echo intval($burst['attempts']??0); ?></td><td><?php echo intval($burst['window_seconds']??0); ?> seconds</td></tr><?php endforeach; ?>
+                        </tbody></table></div><?php endif; ?>
+                        <p class="description">Records pre-flush hook attempts, not confirmed completed Redis flushes. No cache keys, key values or stack traces are stored.</p>
+                    </details>
+                    <details><summary><strong>PHP serialization and compression benchmark</strong></summary>
+                        <p>Isolated sample payload, <?php echo intval($serial['iterations']??0); ?> round-trip samples per available codec. No live cache configuration changes.</p>
+                        <table class="widefat striped"><thead><tr><th>Codec</th><th>Status</th><th>Median round-trip</th><th>Output bytes</th></tr></thead><tbody>
+                        <?php foreach(array('Serialization'=>(array)($serial['methods']??array()), 'Compression'=>(array)($serial['compression']??array())) as $kind=>$codecs): foreach($codecs as $name=>$sample): ?><tr><td><?php echo esc_html($kind.' · '.$name); ?></td><td><?php echo esc_html((string)($sample['status']??'unavailable')); ?></td><td><?php echo isset($sample['median_roundtrip_ms'])?esc_html((string)$sample['median_roundtrip_ms']).' ms':'n/a'; ?></td><td><?php echo isset($sample['bytes'])?intval($sample['bytes']):'n/a'; ?></td></tr><?php endforeach; endforeach; ?></tbody></table>
+                    </details>
+                    <details open><summary><strong>Guided recommendations</strong></summary>
+                        <table class="widefat striped"><thead><tr><th>Priority</th><th>Recommended investigation</th><th>Mode</th></tr></thead><tbody><?php foreach((array)($ocp['recommendations']??array()) as $a): ?><tr><td><?php echo esc_html(strtoupper((string)($a['priority']??'info'))); ?></td><td><?php echo esc_html((string)($a['message']??'')); ?></td><td>Guided · no automatic changes</td></tr><?php endforeach; ?></tbody></table>
+                        <p class="description">For per-operation Redis command stacks, consult Object Cache Pro's Query Monitor integration with tightly bounded diagnostic windows. Permanent command logging may consume significant PHP memory.</p>
+                    </details>
+                <?php endif; ?>
+            </div>
+            <div class="pfc-box" id="cache-diagnostics">
+                <form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                    <input type="hidden" name="action" value="pfc_cache_diagnose">
+                    <?php wp_nonce_field( 'pfc_cache_diagnose' ); ?>
+                    <button type="submit" class="button button-primary">Run Redis, Autoload &amp; Object Cache Pro Diagnostics</button>
+                    <label style="display:block;margin-top:10px"><input type="checkbox" name="ocp_groups" value="1"> Read Object Cache Pro cache-group inventory (can scan many keys)</label>
+                    <label style="display:block;margin-top:6px"><input type="checkbox" name="ocp_group_memory" value="1"> Include group memory estimates (extra workload, off-peak/staging only; requires group inventory)</label>
+                </form>
+                <p class="description">Includes the existing short-lived Redis probes and autoload scan, plus read-only Object Cache Pro Site Health/ACL capability checks and an isolated synthetic serialization benchmark. Optional group inventory uses Object Cache Pro's GET endpoint, never a custom Redis key scan. Group memory enumeration may be costly and is never automatic. No credentials, cache keys or values are displayed.</p>
+            </div>
+            <?php if ( ! $cache_diagnostic ): ?>
+                <div class="pfc-empty">No recent diagnostic report. Run the test above to identify whether Redis itself or WordPress object-cache processing is slower.</div>
+            <?php else:
+                $d = (array) $cache_diagnostic;
+                $api = (array) ( $d['object_cache'] ?? array() );
+                $redis = (array) ( $d['redis'] ?? array() );
+                $auto = (array) ( $d['autoload'] ?? array() );
+                $cfg = (array) ( $d['configuration'] ?? array() );
+            ?>
+                <div class="pfc-box">
+                    <h3>Measurements</h3>
+                    <p>Recorded <?php echo esc_html( (string) ( $d['at'] ?? '' ) ); ?>. Persistent cache: <strong><?php echo ! empty( $d['persistent'] ) ? 'active' : 'not detected'; ?></strong>. Provider: <?php echo esc_html( (string) ( $cfg['provider'] ?? 'unknown' ) ); ?>. Persistent connections: <?php echo ! isset( $cfg['persistent_connection'] ) ? 'unknown' : ( $cfg['persistent_connection'] ? 'enabled' : 'disabled' ); ?>.</p>
+                    <p><strong>Direct Redis:</strong> <?php echo 'ok' === ( $redis['status'] ?? '' ) ? 'connected' : esc_html( (string) ( $redis['reason'] ?? 'unavailable' ) ); ?></p>
+                    <p><strong>Test stage:</strong> <?php echo esc_html( strtoupper( (string) ( $redis['stage'] ?? 'unavailable' ) ) ); ?>.
+                       <strong>Result category:</strong> <?php echo esc_html( (string) ( $redis['failure_kind'] ?? $redis['result_category'] ?? ( 'ok' === ( $redis['status'] ?? '' ) ? 'success' : 'not tested' ) ) ); ?>.
+                       <strong>Probe key prefix:</strong> <?php echo esc_html( (string) ( $redis['key_prefix_source'] ?? 'unknown' ) ); ?>.
+                       <strong>Write command:</strong> <?php echo esc_html( (string) ( $redis['set_command'] ?? 'not run' ) ); ?>.</p>
+                    <?php if ( 'SET' === ( $redis['stage'] ?? '' ) ): ?><p class="description">WordPress cache SET may work even if this isolated Redis SET is refused. The test key's namespace is only a candidate and might not match Object Cache Pro's internal key layout. Do not broaden ACLs based on this test alone.</p><?php endif; ?>
+                    <p><strong>Connection:</strong> <?php echo isset( $redis['connection_ms'] ) ? esc_html( (string) $redis['connection_ms'] ) . ' ms' : 'not measured'; ?>.
+                       <strong>PING:</strong> <?php echo isset( $redis['ping_ms'] ) ? esc_html( (string) $redis['ping_ms'] ) . ' ms' : 'not measured'; ?>.</p>
+                    <table class="widefat striped"><thead><tr><th>Layer</th><th>Operation</th><th>Samples</th><th>Median</th><th>p95</th><th>Maximum</th></tr></thead><tbody>
+                    <?php foreach ( array( 'WordPress cache API' => $api, 'Direct Redis' => $redis ) as $layer => $series ):
+                        foreach ( array( 'set', 'get', 'delete' ) as $op ):
+                            $stat = (array) ( $series[ $op ] ?? array() ); ?>
+                        <tr><td><?php echo esc_html( $layer ); ?></td><td><?php echo esc_html( strtoupper( $op ) ); ?></td><td><?php echo intval( $stat['n'] ?? 0 ); ?></td><td><?php echo isset( $stat['median_ms'] ) ? esc_html( (string) $stat['median_ms'] ) . ' ms' : 'n/a'; ?></td><td><?php echo isset( $stat['p95_ms'] ) ? esc_html( (string) $stat['p95_ms'] ) . ' ms' : 'n/a'; ?></td><td><?php echo isset( $stat['max_ms'] ) ? esc_html( (string) $stat['max_ms'] ) . ' ms' : 'n/a'; ?></td></tr>
+                        <?php endforeach; endforeach; ?></tbody></table>
+                    <p class="description">WordPress API timings include PHP and the drop-in and may hit an in-process cache. Direct Redis timings measure separate Redis commands. These are not total page-request timings; p95 from 12 samples is only a quick indicator, not a production latency percentile.</p>
+                    <?php if ( ! empty( $api['failed'] ) || ! empty( $redis['failed'] ) ): ?><p class="pfc-critical">Verification failures: WordPress <?php echo intval( $api['failed'] ?? 0 ); ?>, direct Redis <?php echo intval( $redis['failed'] ?? 0 ); ?>.</p><?php endif; ?>
+                    <?php if ( ! empty( $redis['server_counters'] ) ): ?><details><summary>Redis server counters (snapshot, not per-request costs)</summary><ul><?php foreach ( (array) $redis['server_counters'] as $name => $value ): ?><li><?php echo esc_html( $name ); ?>: <?php echo esc_html( (string) $value ); ?></li><?php endforeach; ?></ul></details><?php endif; ?>
+                </div>
+                <div class="pfc-box"><h3>Autoloaded WordPress options</h3>
+                    <p><?php echo esc_html( size_format( (int) ( $auto['bytes'] ?? 0 ) ) ); ?> in <?php echo intval( $auto['count'] ?? 0 ); ?> options. Read-only evidence: do not disable autoload without checking the plugin that owns the option.</p>
+                    <table class="widefat striped"><thead><tr><th>Option</th><th>Size</th><th>Autoload flag</th></tr></thead><tbody>
+                    <?php foreach ( (array) ( $auto['largest'] ?? array() ) as $option ): ?><tr><td><code><?php echo esc_html( (string) ( $option['option_name'] ?? '' ) ); ?></code></td><td><?php echo esc_html( size_format( (int) ( $option['bytes'] ?? 0 ) ) ); ?></td><td><?php echo esc_html( (string) ( $option['autoload'] ?? '' ) ); ?></td></tr><?php endforeach; ?>
+                    </tbody></table>
+                </div>
+                <div class="pfc-box"><h3>Recommended next checks</h3><ul><?php foreach ( (array) ( $d['recommendations'] ?? array() ) as $advice ): ?><li><?php echo esc_html( (string) $advice ); ?></li><?php endforeach; ?></ul><p><a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=profiling#profiling' ) ); ?>">Profile a representative uncached page request</a> to examine the remaining 80–100 ms request budget.</p></div>
+            <?php endif; ?>
+        </section>
+        <?php endif; ?>
+
         <?php if ( 'system' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="system" id="pfc-view-system">
         <div class="pfc-view-heading"><h2>System scan</h2><p>Inspect the complete database, plugin, cache, job, frontend and storage-engine snapshot from the latest scan.</p></div>
+        <?php if ( $scan ): ?>
+        <div class="pfc-actions"><form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post"><input type="hidden" name="action" value="pfc_export_ai"><input type="hidden" name="scope" value="scan"><?php wp_nonce_field( 'pfc_export_ai' ); ?><button class="button"><span class="dashicons dashicons-download" aria-hidden="true"></span> Export scan summary for AI (.json)</button></form></div>
+        <p class="description">Exports a redacted summary of the cached scan, not raw queries, plugin settings or database contents.</p>
+        <?php endif; ?>
+
         <?php if($scan): self::render_scan_details($scan); else: ?><div class="pfc-empty">Run a Production-Safe Scan to populate the full system view.</div><?php endif; ?>
         </section>
         <?php endif; ?>

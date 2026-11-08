@@ -2,7 +2,7 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 final class PFC_Bootstrap {
-    const VERSION = '2.1.0';
+    const VERSION = '2.8.0';
     const SAVE_COOKIE = 'pfc_capture_save';
 
     public static function path() { return trailingslashit( WPMU_PLUGIN_DIR ) . '000-performance-console-bootstrap.php'; }
@@ -24,7 +24,10 @@ final class PFC_Bootstrap {
         if ( self::VERSION === get_transient( 'pfc_bootstrap_checked' ) ) { return; }
         $status = self::status();
         if ( ! $status['installed'] || ! $status['current'] ) {
-            self::install();
+            $result = self::install();
+            // A read-only mu-plugins directory must not be treated as a
+            // successful upgrade. Retrying on a later admin visit is safer.
+            if ( is_wp_error( $result ) ) { return; }
         }
         set_transient( 'pfc_bootstrap_checked', self::VERSION, DAY_IN_SECONDS );
     }
@@ -61,12 +64,13 @@ final class PFC_Bootstrap {
         return array( 'path' => $path, 'installed' => $installed, 'current' => $current, 'version' => $version, 'writable' => is_writable( WPMU_PLUGIN_DIR ) );
     }
 
-    public static function token( $url, $exclude = '', $probe_id = '' ) {
+    public static function token( $url, $exclude = '', $probe_id = '', $php_callbacks = false ) {
         $ts = time();
         $path = (string) wp_parse_url( $url, PHP_URL_PATH );
         $secret = (string) get_option( 'pfc_secret' );
-        $sig = hash_hmac( 'sha256', $ts . '|' . $path . '|' . $exclude . '|' . $probe_id, $secret );
-        return array( 'pfc_diag' => 1, 'pfc_ts' => $ts, 'pfc_sig' => $sig, 'pfc_exclude' => $exclude, 'pfc_probe' => $probe_id );
+        $mode = $php_callbacks ? 'callbacks' : 'standard';
+        $sig = hash_hmac( 'sha256', $ts . '|' . $path . '|' . $exclude . '|' . $probe_id . '|' . $mode, $secret );
+        return array( 'pfc_diag' => 1, 'pfc_ts' => $ts, 'pfc_sig' => $sig, 'pfc_exclude' => $exclude, 'pfc_probe' => $probe_id, 'pfc_php_cb' => $php_callbacks ? '1' : '0' );
     }
 
     public static function save_capture_value( $user_id, $kind, $expires, $capture_id, $secret = '' ) {

@@ -4,8 +4,10 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 final class PFC_Profiler {
     private const MAX_SAVE_CALLBACK_TIMING_ROWS = 200;
     private static $start = 0.0;
+    private static $cache_fallback_start = array();
     private static $http = array();
     private static $http_starts = array();
+    private static $http_dropped = 0;
     private static $sample = false;
     private static $hook_starts = array();
     private static $hook_totals = array();
@@ -33,6 +35,7 @@ final class PFC_Profiler {
             if ( self::$sample && ! defined( 'SAVEQUERIES' ) ) { define( 'SAVEQUERIES', true ); }
         }
         if ( ! self::$sample ) { return; }
+        self::$cache_fallback_start = PFC_Request_Cache::snapshot();
 
         // SAVEQUERIES is checked on each query by wpdb. Signed/sample requests only.
         if ( ! defined( 'SAVEQUERIES' ) ) { define( 'SAVEQUERIES', true ); }
@@ -43,6 +46,7 @@ final class PFC_Profiler {
         add_filter( 'site_status_tests', array( __CLASS__, 'site_health' ) );
         add_filter( 'pre_option', array( __CLASS__, 'track_option' ), 9999, 3 );
         self::register_hook_timers();
+        if ( $deep ) { PFC_Callback_Profiler::init(); PFC_Bricks_Inspector::init(); }
     }
 
 
@@ -289,36 +293,85 @@ final class PFC_Profiler {
     }
 
     public static function http_start( $args, $url ) {
-        $key = md5( $url . '|' . microtime( true ) . '|' . mt_rand() );
+        // Existing hooks run only for signed deep profiles or configured samples.
+        // Source tracing is strictly limited to signed/explicit deep captures.
+        if ( count( self::$http ) >= 100 ) { ++self::$http_dropped; return $args; }
+        $deep = defined( 'PFC_DEEP_DIAGNOSTIC' ) && PFC_DEEP_DIAGNOSTIC;
+        $trace = $deep ? debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 28 ) : array();
+        $extra = $deep ? PFC_HTTP_Inspector::start_context(
+            (string) $url, (array) $args, $trace, (array) ( $GLOBALS['wp_current_filter'] ?? array() ),
+            (string) ( $GLOBALS['pfc_http_group_secret'] ?? '' )
+        ) : array();
         self::$http_starts[ $url ][] = array(
-            'key' => $key, 'start' => microtime( true ),
+            'start' => microtime( true ),
             'method' => sanitize_text_field( $args['method'] ?? 'GET' ),
             'timeout' => (float) ( $args['timeout'] ?? 5 ),
             'blocking' => ! isset( $args['blocking'] ) || (bool) $args['blocking'],
-            'hook' => current_filter(),
+            'caller' => $deep ? PFC_Utils::component_from_trace( $trace ) : array(),
+            'extra' => $extra,
         );
         return $args;
     }
 
     public static function http_debug( $response, $context, $class, $parsed_args, $url ) {
         if ( 'response' !== $context ) { return; }
-        $trace = debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 16 );
-        $component = PFC_Utils::component_from_trace( $trace );
+        if ( count( self::$http ) >= 100 ) { ++self::$http_dropped; return; }
         $started = array();
         if ( ! empty( self::$http_starts[ $url ] ) ) { $started = array_shift( self::$http_starts[ $url ] ); }
+        $component = ! empty( $started['caller']['slug'] ) ? $started['caller'] : PFC_Utils::component_from_trace( debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 16 ) );
         $elapsed = ! empty( $started['start'] ) ? ( microtime( true ) - $started['start'] ) * 1000 : 0;
-        $error = is_wp_error( $response ) ? sanitize_text_field( $response->get_error_message() ) : '';
-        $status = is_wp_error( $response ) ? 0 : (int) wp_remote_retrieve_response_code( $response );
+        $failed_transport = is_wp_error( $response );
+        $status = $failed_transport ? 0 : (int) wp_remote_retrieve_response_code( $response );
+        $extra = (array) ( $started['extra'] ?? array() );
+        // The generic component_from_trace() helper also returns an absolute
+        // file path. Strip it before persisting HTTP evidence to the runs table.
+        $component = array(
+            'type' => sanitize_key( (string) ( $component['type'] ?? 'core' ) ),
+            'slug' => sanitize_key( (string) ( $component['slug'] ?? 'wordpress' ) ),
+        );
+        // Host, path, query parameters and absolute source path are NOT saved.
         self::$http[] = array(
-            'host' => sanitize_text_field( wp_parse_url( $url, PHP_URL_HOST ) ),
-            'path' => sanitize_text_field( wp_parse_url( $url, PHP_URL_PATH ) ?: '/' ),
             'ms' => round( $elapsed, 3 ),
             'component' => $component,
+            'target_type' => (string) ( $extra['target_type'] ?? 'unknown' ),
+            'target_group' => $extra['target_group'] ?? null,
+            'site' => (array) ( $extra['site'] ?? array() ),
             'method' => sanitize_text_field( $started['method'] ?? ( $parsed_args['method'] ?? 'GET' ) ),
             'timeout' => (float) ( $started['timeout'] ?? ( $parsed_args['timeout'] ?? 0 ) ),
             'blocking' => isset( $started['blocking'] ) ? (bool) $started['blocking'] : true,
             'status' => $status,
-            'error' => $error,
+            'failed' => $failed_transport || $status >= 400 || 0 === $status,
+        );
+    }
+
+    /**
+     * Administrator-requested loopback test of the exact HTTP capture hooks.
+     * No remote host, URL or response body is stored or exported.
+     */
+    public static function http_collector_self_test() {
+        $before = count( self::$http );
+        $url = rest_url( '/' );
+        $already_start = false !== has_filter( 'http_request_args', array( __CLASS__, 'http_start' ) );
+        $already_debug = false !== has_action( 'http_api_debug', array( __CLASS__, 'http_debug' ) );
+        if ( ! $already_start ) { add_filter( 'http_request_args', array( __CLASS__, 'http_start' ), 10, 2 ); }
+        if ( ! $already_debug ) { add_action( 'http_api_debug', array( __CLASS__, 'http_debug' ), 10, 5 ); }
+        $start = microtime( true );
+        $response = null;
+        try {
+            $response = wp_remote_get( $url, array( 'timeout' => 8, 'redirection' => 0, 'headers' => array( 'Cache-Control' => 'no-store' ) ) );
+        } finally {
+            if ( ! $already_start ) { remove_filter( 'http_request_args', array( __CLASS__, 'http_start' ), 10 ); }
+            if ( ! $already_debug ) { remove_action( 'http_api_debug', array( __CLASS__, 'http_debug' ), 10 ); }
+        }
+        $after = count( self::$http );
+        return array(
+            'at' => gmdate( 'Y-m-d H:i:s' ) . ' UTC',
+            'collector_observed' => $after > $before,
+            'response_status' => is_wp_error( $response ) ? null : (int) wp_remote_retrieve_response_code( $response ),
+            'transport_error' => is_wp_error( $response ),
+            'elapsed_ms' => round( ( microtime( true ) - $start ) * 1000, 2 ),
+            'scope' => 'administrator-triggered-local-REST-loopback',
+            'note' => 'A successful capture proves the WordPress HTTP API hooks work for this loopback. It does not prove a third-party plugin performs any remote calls on other requests.',
         );
     }
 
@@ -343,8 +396,9 @@ final class PFC_Profiler {
                 if ( ! $deep || $query_index >= 7500 ) { continue; }
                 $norm = PFC_Utils::normalize_sql( $sql );
                 $rawhash = md5( $sql );
-                $trace = array();
-                if ( ! empty( $trace_map[ $rawhash ] ) ) { $trace = array_shift( $trace_map[ $rawhash ] ); }
+                $trace_entry = array();
+                if ( ! empty( $trace_map[ $rawhash ] ) ) { $trace_entry = array_shift( $trace_map[ $rawhash ] ); }
+                $trace = (array) ( $trace_entry['trace'] ?? array() );
                 $comp = PFC_Utils::component_from_trace( $trace );
                 $hash = md5( $norm . '|' . $comp['type'] . '|' . $comp['slug'] );
                 if ( ! isset( $queries_by_pattern[ $hash ] ) ) {
@@ -353,6 +407,14 @@ final class PFC_Profiler {
                 $queries_by_pattern[ $hash ]['count']++;
                 $queries_by_pattern[ $hash ]['total'] += $sec * 1000;
                 $queries_by_pattern[ $hash ]['max'] = max( $queries_by_pattern[ $hash ]['max'], $sec * 1000 );
+                // Match the query-filter trace to this executed SQL statement,
+                // then attribute its owning callable, relative file and hook.
+                // This adds no extra backtrace calls to the request lifecycle.
+                PFC_SQL_Inspector::add_site(
+                    $queries_by_pattern[ $hash ],
+                    PFC_SQL_Inspector::from_trace( $trace, $trace_entry['hook'] ?? '' ),
+                    $sec * 1000
+                );
             }
         }
 
@@ -360,11 +422,28 @@ final class PFC_Profiler {
         $route = $deep ? PFC_Utils::route() : PFC_Utils::route_group();
         $phases = self::phase_durations();
         $run_payload['http'] = array_slice( self::$http, 0, 100 );
+        $run_payload['http_truncated'] = self::$http_dropped > 0;
+        // A redacted, bounded summary only. The trace arrays and raw SQL must
+        // not be persisted in runs.payload or sent to the AI exporter.
+        if ( $deep ) { $run_payload['sql_callsites'] = PFC_SQL_Inspector::summary( $queries_by_pattern ); }
         $run_payload['deep'] = $deep;
+        if ( $deep ) {
+            $run_payload['callback_profile'] = PFC_Callback_Profiler::summary();
+            $run_payload['bricks_profile'] = PFC_Bricks_Inspector::with_initialization_breakdown(
+                PFC_Bricks_Inspector::summary(), (array) $run_payload['callback_profile'] );
+        }
         $run_payload['phases'] = $phases;
         $run_payload['hook_ms'] = array_map( static function ( $v ) { return round( $v, 3 ); }, self::$hook_totals );
         $run_payload['database_errors'] = self::database_errors( (array) $EZSQL_ERROR, $trace_map );
         $run_payload['included_files'] = count( get_included_files() );
+        // No test operations are performed on the profiled request. This is a
+        // passive delta of public object-cache counters only, if exposed.
+        $cache_start = (array) ( $GLOBALS['pfc_cache_start_snapshot'] ?? self::$cache_fallback_start );
+        $run_payload['cache_request'] = PFC_Request_Cache::report(
+            $cache_start,
+            (array) ( $GLOBALS['pfc_cache_phase_marks'] ?? array() ),
+            PFC_Request_Cache::snapshot()
+        );
         $run_payload['query_timing_available'] = defined( 'SAVEQUERIES' ) && SAVEQUERIES;
         $run_payload['measurement_scope'] = isset( $GLOBALS['pfc_diag_start'] ) ? 'mu-bootstrap-to-shutdown' : 'plugins-loaded-to-shutdown';
         $run_payload['query_details_truncated'] = count( (array) ( $wpdb->queries ?? array() ) ) > 7500;
@@ -449,7 +528,7 @@ final class PFC_Profiler {
     private static function trace_map() {
         $trace_map = array();
         foreach ( (array) ( $GLOBALS['pfc_query_traces'] ?? array() ) as $t ) {
-            if ( isset( $t['sql_hash'], $t['trace'] ) ) { $trace_map[ $t['sql_hash'] ][] = $t['trace']; }
+            if ( isset( $t['sql_hash'], $t['trace'] ) ) { $trace_map[ $t['sql_hash'] ][] = array( 'trace' => (array) $t['trace'], 'hook' => (string) ( $t['hook'] ?? '' ) ); }
         }
         return $trace_map;
     }
@@ -459,10 +538,10 @@ final class PFC_Profiler {
         foreach ( array_slice( $errors, -50 ) as $error ) {
             $sql = (string) ( $error['query'] ?? '' );
             if ( self::is_expected_diagnostic_error( $sql, (string) ( $error['error_str'] ?? '' ) ) ) { continue; }
-            $trace = array();
+            $trace_entry = array();
             $hash = md5( $sql );
-            if ( ! empty( $trace_map[ $hash ] ) ) { $trace = array_shift( $trace_map[ $hash ] ); }
-            $component = PFC_Utils::component_from_trace( $trace );
+            if ( ! empty( $trace_map[ $hash ] ) ) { $trace_entry = array_shift( $trace_map[ $hash ] ); }
+            $component = PFC_Utils::component_from_trace( (array) ( $trace_entry['trace'] ?? array() ) );
             $item = array(
                 'error' => sanitize_text_field( PFC_Utils::truncate( (string) ( $error['error_str'] ?? 'Database error' ), 0, 500 ) ),
                 'query' => PFC_Utils::normalize_sql( $sql ),
@@ -774,7 +853,7 @@ final class PFC_Profiler {
 
     private static function has_actionable_http() {
         foreach ( self::$http as $item ) {
-            if ( ! empty( $item['error'] ) || (int) ( $item['status'] ?? 0 ) >= 400 || ( ! empty( $item['blocking'] ) && (float) ( $item['ms'] ?? 0 ) >= 300 ) ) { return true; }
+            if ( ! empty( $item['failed'] ) || (int) ( $item['status'] ?? 0 ) >= 400 || ( ! empty( $item['blocking'] ) && (float) ( $item['ms'] ?? 0 ) >= 300 ) ) { return true; }
         }
         return false;
     }
@@ -782,12 +861,17 @@ final class PFC_Profiler {
     private static function http_issues( $route ) {
         foreach ( self::$http as $item ) {
             $component = $item['component']['slug'] ?? 'unknown';
-            if ( $item['error'] ) {
-                PFC_Utils::issue( 'http', 'critical', 'Outbound HTTP request failed from ' . $component, esc_html( $item['host'] . $item['path'] . ': ' . $item['error'] ), round( $item['ms'] ) . ' ms', 'Handle the failure without blocking normal page generation, and verify DNS/TLS/API availability and timeouts.', $route );
-            } elseif ( $item['status'] >= 400 ) {
-                PFC_Utils::issue( 'http', 'high', 'Outbound HTTP request returned an error status from ' . $component, esc_html( $item['host'] . $item['path'] . ' returned HTTP ' . $item['status'] ), round( $item['ms'] ) . ' ms', 'Fix the integration endpoint/authentication and avoid retrying failed requests on every page load.', $route );
-            } elseif ( $item['blocking'] && $item['ms'] >= 300 ) {
-                PFC_Utils::issue( 'http', $item['ms'] >= 1000 ? 'critical' : 'high', 'Slow blocking HTTP request from ' . $component, esc_html( $item['host'] . $item['path'] ) . ' blocked PHP for approximately ' . round( $item['ms'] ) . ' ms.', round( $item['ms'] ) . ' ms', 'Cache the response or move synchronization to cron/Action Scheduler/background processing.', $route );
+            $status = (int) ( $item['status'] ?? 0 );
+            $target_group = (string) ( $item['target_group'] ?? '' );
+            $label = preg_match( '/^[a-f0-9]{16}$/D', $target_group ) ? 'Target group ' . $target_group : 'Redacted remote target';
+            if ( 0 === $status && ! empty( $item['failed'] ) ) {
+                PFC_Utils::issue( 'http', 'critical', 'Outbound HTTP request failed from ' . $component, esc_html( $label . ': no successful HTTP response' ), round( $item['ms'] ) . ' ms', 'Handle the network/API failure without blocking page generation; verify transport configuration and provider availability.', $route );
+            } elseif ( 429 === $status ) {
+                PFC_Utils::issue( 'http', 'high', 'HTTP 429 rate limit from ' . $component, esc_html( $label . ' returned HTTP 429' ), round( $item['ms'] ) . ' ms', 'Review API quotas and caching, provider-approved backoff and background refresh. Avoid immediate retries on the frontend.', $route );
+            } elseif ( $status >= 400 ) {
+                PFC_Utils::issue( 'http', 'high', 'Outbound HTTP request returned an error status from ' . $component, esc_html( $label . ' returned HTTP ' . $status ), round( $item['ms'] ) . ' ms', 'Fix the owning integration and avoid retrying failed requests on every page load.', $route );
+            } elseif ( ! empty( $item['blocking'] ) && (float) $item['ms'] >= 300 ) {
+                PFC_Utils::issue( 'http', $item['ms'] >= 1000 ? 'critical' : 'high', 'Slow blocking HTTP request from ' . $component, esc_html( $label . ' blocked PHP for approximately ' . round( $item['ms'] ) . ' ms.' ), round( $item['ms'] ) . ' ms', 'Cache remote data safely or move nonessential synchronization to scheduled/background processing.', $route );
             }
         }
     }

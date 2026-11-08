@@ -4,7 +4,7 @@ Tags: performance, database, query, profiler, diagnostics, slow queries
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.0.4
+Stable tag: 3.1.12
 License: GPLv2 or later
 
 Production-oriented WordPress diagnostics and remediation with database integrity/schema checks, slow-query attribution, plugin fault analysis, cron/cache/server inspection, RUM and production safety gates.
@@ -29,6 +29,117 @@ Deep signed route profiles provide normalized query fingerprints, duplicate/N+1 
 6. Create and verify a Performance Console database backup before schema/index/repair operations. Large maintenance operations can be run from the guided wp-admin workflow or WP-CLI; CLI remains preferable for the largest tables.
 
 == Changelog ==
+
+= 3.1.12 =
+* Native Key Tracking: classify a single administrator-supplied error line in-memory; store and export only fixed categories and explicitly identified command enums. The text is immediately discarded.
+* Distinguish status-only native errors from descriptive diagnostics, preserving the unknown cause when Object Cache Pro provides only Error.
+* Passive flush investigator distinguishes fresh attempts from historical records; does not claim confirmed invalidation.
+* Cache group comparisons add bounded key-change rates only when at least five minutes separates actual inventory scans. No cache deletion or provider configuration changes.
+* Improved native diagnostics form and comparison table spacing. AI schema 2.3; MU bootstrap remains 2.8.0.
+
+
+= 3.1.11 =
+* P0 Key Tracking: native Site Health error evidence is separated from exact-cause availability and independent Redis command capabilities. No ACL or drop-in changes.
+* Passive flush investigator records bounded, argument-free plugin/theme-relative caller locations when available and highlights same-group bursts. Not proof of successful flushing.
+* Bricks metadata scopes count repeated sampled key/object pairs without exposing IDs or cache values; available in redacted AI schema 2.2.
+* Added administrator-visible triage guidance and improved evidence layout.
+
+= 3.1.10 =
+* Prioritize Object Cache Pro Native Key Tracking diagnosis in Cache & Redis, with read-only WordPress Site Health Info and registered-test evidence, provenance and confidence.
+* Categorize native Key Tracking errors without persisting or exporting full diagnostic text, passwords, usernames or cache key names.
+* Add a nonce-protected administrator-only status recorder when native Site Health fields cannot be read; clearly label manually reported results and expire them after 24 hours.
+* Explain that Redis CLIENT TRACKINGINFO ACL denial is not itself evidence of Object Cache Pro Key Tracking failure. All Redis ACLs and cache configuration remain untouched.
+* Persist up to five anonymized, administrator-triggered cache-group snapshots to compare group key count and memory changes, never cache data or raw keys.
+* Provide bounded, administrator-only metadata and option accessor names, distinct object sample counts and safe source hints for Bricks initialization; mask credential-looking names and exclude all names from AI JSON.
+* Improve spacing, mobile controls and alignment in the Object Cache Pro diagnostics panel.
+* AI JSON schema 2.1; MU bootstrap unchanged at 2.8.0. No Redis flushing, new key scanning, ACL editing or production cache changes.
+
+
+= 3.1.9 =
+* Fix Object Cache Pro callback attribution in both administrator table and AI export: map the actual signed profiler fields instead of outputting empty metrics.
+* Preserve Redis INFO memory and keyspace counters even when an isolated SET attempt fails; export a sanitized failure category and identify diagnostic prefix uncertainty.
+* Prefer an explicitly configured cache-provider prefix for temporary Redis test keys without exposing it or changing ACLs.
+* Classify 1.5–5 second local frontend HTTP timings as high instead of critical; explain that HTTP time includes WordPress PHP and may not indicate proxy/network latency.
+* Recheck the exact affected frontend route rather than allowing a shallow scan to omit that route; never automatically mark the whole grouped incident resolved.
+* Improve spacing, responsive controls, route-list wrapping and plus-toggle alignment in the Incidents panel, with consistent inset content in Cache & Redis detail panels.
+* AI export schema 2.0; same opt-in diagnostic operation and MU bootstrap 2.8.0. No Redis configuration writes, cache flushes or third-party plugin changes.
+
+= 3.1.7 =
+* Rank exact Bricks query-loop IDs using the first verified SQL-heavy request rather than the last warmed request, and compare with matched later runs.
+* Add bounded, callback-scoped counts of selected WordPress post/term/user metadata and option accessor hooks with only anonymous key fingerprints.
+* Add an administrator-only alternating standard-versus-deep signed-probe comparison and explicit response-comparability checks.
+* Include opt-in accessor evidence and paired timing comparison in privacy-allowlisted AI export schema 1.8.
+* Keep all diagnostics read-only and opt-in; do not change Bricks, Redis, SEO, queries or caching.
+
+
+= 3.1.6 =
+* Prioritize exact, administrator-only Bricks query-loop IDs alongside safe query configuration and SQL timing.
+* Classify missing query completion hooks into suppressed-filter candidates, released objects, observable results and unknown states, without mislabelling failures.
+* Compare two costly Bricks initialization callbacks against independently observed child-query intervals; label overlap/unknowns rather than inventing exclusive PHP time.
+* Extend AI export to schema 1.7 with only safe, bounded categories, hashed query groups and numeric timings.
+* Keep all diagnostics signed, opt-in and non-mutating. No Redis or Bricks settings are modified.
+
+
+= 3.1.5 =
+* Correlate Bricks Query Loop element IDs through the official `bricks/query/result` filter without changing WP_Query arguments or results.
+* Distinguish `the_posts` completions, Bricks-result fallback completions, and unclosed instrumentation scopes.
+* Show local-only Bricks element identifiers to administrators; export only HMAC group identifiers and safe counts.
+* Add Bricks query work grouped by assets/elements call paths and broaden bounded render-hook observations.
+* Better coverage and privacy regression checks.
+
+= 3.1.4 =
+* Add opt-in Bricks query-loop timing grouped by privacy-safe query shapes and optional HMAC element markers.
+* Capture bounded query lifecycle timing and SQL totals without storing raw SQL or post contents.
+* Observe selected Bricks render hooks where available and report their measured scope only.
+* Improve callback profiler coverage distribution across hooks while preserving reference-parameter exclusions.
+* Extend AI export to schema 1.5 and dashboard with Bricks query/render evidence.
+
+= 3.1.3 =
+* Opt-in, signed-only frontend hook and callback timing; reference-taking callbacks skipped.
+* Attribution of cache counter changes during timed callback scopes (not Redis network calls).
+* Bricks callback breakdown and PHP profiling overhead bound.
+* Administrator-triggered local HTTP collector self-test; explicit capability notes.
+
+
+= 3.1.2 =
+* Add signed-only outbound HTTP callsite attribution with source PHP file, line, function, parent hook, response code, 429 count and timing. Target group IDs use a site-secret HMAC and exclude query strings.
+* Add repeatable HTTP 429/failed call findings and guarded repair guidance. Target groups are not treated as proof of retries.
+* Add first-request vs subsequent request SQL cold/warm comparison and first-only fingerprints, without guessing cache causality.
+* Expand privacy-filtered AI JSON schema to 1.3, with no host, URL, query string, SQL text, raw stack trace or absolute path.
+* No automatic blocking, retries, SQL rewrites or cache clearing. Live frontend instrumentation remains opt-in.
+
+
+= 3.1.1 =
+* Added signed-request SQL call-site inspector: fingerprint, invoking PHP callable, component-relative file and line, active hook, counts and SQL execution timings. No new instrumentation on ordinary visitor requests.
+* Added bounded call-site evidence to AI exports without SQL statements, values, raw stack traces or absolute server paths.
+* Added trace-limit and unattributed-call reporting plus MU bootstrap version reconciliation.
+
+
+= 3.1.0 =
+* Add on-demand breakdowns for WordPress outbound HTTP calls by probable caller, destination type, method, blocking status, HTTP status and individual duration, without exposing response bodies, URL paths or query strings.
+* Track signed-profile lifecycle phase wall times and anonymized repeated-SQL pattern fingerprints, execution counts, total SQL duration and slowest execution. Never export raw SQL or literal values.
+* Add an evidence-ranked Workload Repair Centre to the Cache & Redis screen. It distinguishes measured blocking HTTP, high WordPress GET lookup counts (not Redis commands), repeated SQL patterns, SQL spikes, expired transients and large autoload payloads.
+* Connect findings to existing private plugin-impact A/B profiling and reversible autoload review. Allow bounded cleanup of up to 1,000 already-expired transients only after administrator confirmation and nonce validation. No automatic suppression of third-party HTTP calls, SQL rewriting or global cache flushing.
+* Retain the previous verified profile for a same-route before/after diagnostic comparison, with caveats about profiling overhead, content variation and cache warmth.
+* Expand the redacted AI JSON export (schema 1.1) with individual HTTP attribution, SQL pattern counts, phase timings and safe finding identifiers.
+* All expensive attribution remains opt-in behind signed deep-profile requests; ordinary frontend traffic gets no new profiler hooks.
+
+
+= 3.0.9 =
+* Added an administrator-only "Export for AI Analysis (.json)" button on Cache & Redis results.
+* Export synthetic Redis tests and real-request cache profiles together, plus an available site scan summary.
+* Added a redacted System scan summary export with a documented JSON schema and interpretation notes.
+* Strip full URLs, IPs, Redis settings and credentials, option values, raw SQL and other unfiltered telemetry from exports.
+* Protect exports with WordPress capabilities and nonces; never rerun benchmarks during download.
+
+
+= 3.0.7 =
+* Distinguish the specific Redis SET, GET or DEL stage that fails during an on-demand direct benchmark.
+* Use the WordPress Redis key prefix when defined, preventing test keys from falling outside permitted Redis ACL key patterns. The actual prefix is never displayed.
+* Use Redis SET EX rather than SETEX for expiring diagnostic keys, avoiding a false failure when Redis ACLs allow SET but not SETEX.
+* Report safe error categories for ACL restrictions, read-only replicas, memory limits, disabled commands, authentication and transport errors without showing raw Redis exceptions or passwords.
+* Preserve direct connection and PING timings on partial failure. Keep the 12-sample cap and 45-second TTL for unique diagnostic keys, and never modify Redis server configuration.
+
 
 = 3.0.4 =
 * Fix a fatal error on hosts without the optional mbstring extension: 19 unguarded mb_substr() calls now route through a helper that falls back to substr(). MB_IN_BYTES/GB_IN_BYTES no longer depend on WordPress having loaded them.
@@ -210,3 +321,33 @@ Deep signed route profiles provide normalized query fingerprints, duplicate/N+1 
 
 = 1.0.0 =
 * Initial diagnostic framework.
+
+== New in 3.0.8 ==
+
+The Cache & Redis view adds a signed on-demand real-request profiler alongside
+the synthetic Redis benchmark. It records public cache hit/miss counters when
+exposed by the object-cache drop-in, with coarse request-phase deltas, PHP time,
+SQL time/query counts and the top SQL-attributed components. Counter values do
+not measure Redis round trips, SET/DELETE calls, or cache duration, and SQL
+attribution is not attribution of object-cache work.
+
+No interception or replacement of object-cache.php is performed. Ordinary
+traffic continues using existing low-rate sampling; detailed route runs are
+explicit admin-only actions.
+
+== New in 3.0.9 ==
+
+The Cache & Redis results screen provides an "Export for AI Analysis (.json)"
+action after any synthetic test or real-request profile. It downloads a
+self-contained JSON file containing the currently available Redis/API timings,
+per-request cache counter deltas and phase summaries, SQL measurements and
+attribution, autoload option sizes, Redis counters and a compact system scan
+summary. A System scan summary also has a separate export action.
+
+Exports are manually triggered by an administrator and never re-run tests.
+Results are retrieved from the current administrator's short-lived transients;
+expired results must be collected again. Access is capability/nonce protected.
+The allowlisted report omits full URLs, SQL statements, IPs, passwords, cache
+keys, option values, session data and unfiltered error logs. Names resembling
+secrets are masked. Review before sending the file to an external AI service.
+These are measurements and test context, not an AI-generated diagnosis.

@@ -1,6 +1,6 @@
 <?php
 /** Performance Console early diagnostic/bootstrap sampler.
- * PFC Bootstrap Version: 2.1.0
+ * PFC Bootstrap Version: 2.8.0
  */
 if ( ! defined( 'ABSPATH' ) ) { return; }
 
@@ -13,6 +13,7 @@ $pfc_deep = false;
 $pfc_signed_diag = false;
 $pfc_exclude = '';
 $pfc_probe_id = '';
+$pfc_callback_mode = 'standard';
 $pfc_save_capture = array();
 $pfc_secret = '';
 $pfc_diag = isset( $_GET['pfc_diag'], $_GET['pfc_ts'], $_GET['pfc_sig'] ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -23,8 +24,9 @@ if ( $pfc_diag ) {
     $pfc_sig = sanitize_text_field( wp_unslash( $_GET['pfc_sig'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
     $pfc_exclude = isset( $_GET['pfc_exclude'] ) ? sanitize_text_field( wp_unslash( $_GET['pfc_exclude'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
     $pfc_probe_id = isset( $_GET['pfc_probe'] ) ? sanitize_text_field( wp_unslash( $_GET['pfc_probe'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+    $pfc_callback_mode = isset( $_GET['pfc_php_cb'] ) && '1' === (string) $_GET['pfc_php_cb'] ? 'callbacks' : 'standard'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
     $pfc_path = isset( $_SERVER['REQUEST_URI'] ) ? strtok( wp_unslash( $_SERVER['REQUEST_URI'] ), '?' ) : '/';
-    $pfc_expected = hash_hmac( 'sha256', $pfc_ts . '|' . $pfc_path . '|' . $pfc_exclude . '|' . $pfc_probe_id, (string) $pfc_secret );
+    $pfc_expected = hash_hmac( 'sha256', $pfc_ts . '|' . $pfc_path . '|' . $pfc_exclude . '|' . $pfc_probe_id . '|' . $pfc_callback_mode, (string) $pfc_secret );
     $pfc_signed_diag = $pfc_secret && abs( time() - $pfc_ts ) <= 120 && hash_equals( $pfc_expected, $pfc_sig );
     $pfc_deep = $pfc_signed_diag;
 }
@@ -73,6 +75,7 @@ if ( ! $pfc_deep ) {
 if ( ! defined( 'PFC_SAMPLING_DECIDED' ) ) { define( 'PFC_SAMPLING_DECIDED', true ); }
 if ( ! $pfc_deep && ! $pfc_sample ) { return; }
 
+if ( $pfc_signed_diag && 'callbacks' === $pfc_callback_mode && ! defined( 'PFC_PHP_CALLBACK_DIAGNOSTIC' ) ) { define( 'PFC_PHP_CALLBACK_DIAGNOSTIC', true ); }
 if ( $pfc_deep && ! defined( 'PFC_DEEP_DIAGNOSTIC' ) ) { define( 'PFC_DEEP_DIAGNOSTIC', true ); }
 if ( $pfc_save_capture && ! defined( 'PFC_SAVE_DIAGNOSTIC' ) ) { define( 'PFC_SAVE_DIAGNOSTIC', true ); }
 if ( $pfc_sample && ! defined( 'PFC_SAMPLED_REQUEST' ) ) { define( 'PFC_SAMPLED_REQUEST', true ); }
@@ -95,7 +98,29 @@ $GLOBALS['pfc_excluded_plugin'] = $pfc_exclude;
 $GLOBALS['pfc_save_capture'] = $pfc_save_capture;
 $GLOBALS['pfc_phase_marks'] = array( 'mu_plugin_bootstrap' => $GLOBALS['pfc_diag_start'] );
 
-$pfc_mark = static function ( $name ) { $GLOBALS['pfc_phase_marks'][ $name ] = microtime( true ); };
+// Snapshot WordPress object-cache public counters only on sampled/signed requests.
+// These counters may include in-process cache access; they are not Redis commands.
+$pfc_cache_snapshot = static function () {
+    global $wp_object_cache;
+    if ( ! is_object( $wp_object_cache ) ) { return array( 'available' => false ); }
+    $out = array( 'available' => false );
+    foreach ( array( 'hits' => array( 'cache_hits', 'hits' ), 'misses' => array( 'cache_misses', 'misses' ) ) as $metric => $names ) {
+        foreach ( $names as $name ) {
+            if ( isset( $wp_object_cache->$name ) && is_numeric( $wp_object_cache->$name ) ) {
+                $out[ $metric ] = max( 0, (int) $wp_object_cache->$name );
+                $out['available'] = true;
+                break;
+            }
+        }
+    }
+    return $out;
+};
+$GLOBALS['pfc_cache_start_snapshot'] = $pfc_cache_snapshot();
+$GLOBALS['pfc_cache_phase_marks'] = array();
+$pfc_mark = static function ( $name ) use ( $pfc_cache_snapshot ) {
+    $GLOBALS['pfc_phase_marks'][ $name ] = microtime( true );
+    $GLOBALS['pfc_cache_phase_marks'][ $name ] = $pfc_cache_snapshot();
+};
 add_action( 'muplugins_loaded', static function () use ( $pfc_mark ) { $pfc_mark( 'muplugins_loaded' ); }, PHP_INT_MAX );
 add_action( 'plugins_loaded', static function () use ( $pfc_mark ) { $pfc_mark( 'plugins_loaded' ); }, PHP_INT_MAX );
 add_action( 'setup_theme', static function () use ( $pfc_mark ) { $pfc_mark( 'setup_theme' ); }, PHP_INT_MAX );
@@ -126,7 +151,13 @@ if ( $pfc_deep ) {
     add_filter( 'query', static function ( $sql ) {
         if ( count( $GLOBALS['pfc_query_traces'] ) < 5000 ) {
             $trace = debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS, 18 );
-            $GLOBALS['pfc_query_traces'][] = array( 'sql_hash' => md5( $sql ), 'trace' => $trace );
+            // Record the parent WordPress hook, not the instrumentation's
+            // `query` filter. Dynamic values never leave the private run data.
+            $hook = '';
+            foreach ( array_reverse( (array) ( $GLOBALS['wp_current_filter'] ?? array() ) ) as $active_hook ) {
+                if ( 'query' !== $active_hook && 'all' !== $active_hook ) { $hook = (string) $active_hook; break; }
+            }
+            $GLOBALS['pfc_query_traces'][] = array( 'sql_hash' => md5( $sql ), 'trace' => $trace, 'hook' => $hook );
         }
         return $sql;
     }, PHP_INT_MAX );

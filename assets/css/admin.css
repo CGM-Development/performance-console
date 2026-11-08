@@ -71,3 +71,94 @@
 .pfc-save-capture{padding:0;overflow:hidden}.pfc-save-capture__header{padding:20px 22px 17px;border-bottom:1px solid hsl(var(--line));background:hsl(var(--surface))}.pfc-save-capture__title{display:flex;align-items:center;gap:10px}.pfc-save-capture__title h3{margin:0}.pfc-save-capture__header>p{max-width:74ch;margin:6px 0 0;color:hsl(var(--ink-soft))}.pfc-status--armed{color:hsl(var(--accent-ink));background:hsl(var(--accent-soft));border-color:hsl(var(--accent)/.24)}.pfc-save-capture__layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(310px,.55fr)}.pfc-save-capture__control{display:flex;align-items:center;min-height:224px;padding:22px}.pfc-save-capture__form{width:100%}.pfc-save-capture__form fieldset{min-width:0;margin:0;padding:0;border:0}.pfc-save-capture__form legend{margin:0 0 10px;padding:0;color:hsl(var(--ink));font-size:13px;font-weight:700}.pfc-capture-choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.pfc-capture-choice{position:relative;display:flex;align-items:flex-start;gap:10px;min-height:78px;padding:13px 14px;border:1px solid hsl(var(--line-strong));border-radius:10px;background:hsl(var(--surface));cursor:pointer;transition:border-color .15s ease,background .15s ease,box-shadow .15s ease}.pfc-capture-choice:hover{border-color:hsl(var(--accent)/.45);background:hsl(var(--accent-soft)/.28)}.pfc-capture-choice:has(input:checked){border-color:hsl(var(--accent)/.62);background:hsl(var(--accent-soft)/.64);box-shadow:0 1px 2px hsl(var(--ink)/.03),0 8px 22px -18px hsl(var(--accent)/.5)}.pfc-capture-choice:has(input:focus-visible){outline:3px solid hsl(var(--accent-bright)/.3);outline-offset:2px}.pfc-capture-choice input{flex:0 0 auto;margin:3px 0 0!important;accent-color:hsl(var(--accent))}.pfc-capture-choice span{display:block}.pfc-capture-choice strong{display:block;color:hsl(var(--ink));font-size:13.5px}.pfc-capture-choice small{display:block;margin-top:3px;color:hsl(var(--ink-soft));font-size:12px;line-height:1.4}.pfc-save-capture__submit{display:flex;align-items:center;gap:12px;margin-top:14px}.pfc-save-capture__submit small{max-width:44ch;color:hsl(var(--ink-soft));line-height:1.4}.pfc-save-capture__journey{padding:21px 22px;border-left:1px solid hsl(var(--line));background:hsl(var(--surface-2)/.42)}.pfc-save-capture__journey h4{margin:0 0 13px}.pfc-save-capture__journey ol{display:grid;gap:12px;margin:0!important;padding:0!important;list-style:none!important}.pfc-save-capture__journey li{display:grid;grid-template-columns:28px minmax(0,1fr);gap:10px;align-items:start}.pfc-save-capture__step-number{display:grid!important;place-items:center;width:28px;height:28px;margin:0!important;border-radius:8px;background:hsl(var(--surface));border:1px solid hsl(var(--line-strong));color:hsl(var(--accent-ink))!important;font-size:11px!important;font-weight:750;line-height:1!important}.pfc-save-capture__journey strong,.pfc-save-capture__journey li div span{display:block}.pfc-save-capture__journey strong{color:hsl(var(--ink));font-size:12.5px}.pfc-save-capture__journey li div span{margin-top:1px;color:hsl(var(--ink-soft));font-size:11.5px;line-height:1.4}.pfc-save-capture__assurance{display:grid;grid-template-columns:20px minmax(280px,.7fr) minmax(320px,1.3fr);align-items:center;gap:10px 12px;padding:13px 22px;border-top:1px solid hsl(var(--line));background:hsl(var(--surface-2)/.2)}.pfc-save-capture__assurance>.dashicons{color:hsl(var(--good));font-size:19px;width:19px;height:19px}.pfc-save-capture__assurance div strong,.pfc-save-capture__assurance div span{display:block}.pfc-save-capture__assurance div strong{color:hsl(var(--ink));font-size:12px}.pfc-save-capture__assurance div span,.pfc-save-capture__assurance p{color:hsl(var(--ink-soft));font-size:11.5px;line-height:1.45}.pfc-save-capture__assurance p{margin:0;padding-left:12px;border-left:1px solid hsl(var(--line))}.pfc-capture-listening{display:flex;align-items:flex-start;gap:13px;width:100%;padding:17px;border-radius:10px;background:hsl(var(--accent-soft)/.68);color:hsl(var(--ink-soft))}.pfc-capture-listening>.dashicons{display:grid;place-items:center;flex:0 0 36px;width:36px;height:36px;border-radius:10px;background:hsl(var(--accent));color:#fff;font-size:20px}.pfc-capture-listening h4{margin:0 0 3px;color:hsl(var(--ink));font-size:15px}.pfc-capture-listening p{margin:0}.pfc-save-capture__armed-actions{display:flex;align-items:center;justify-content:space-between;gap:14px;width:100%;margin-top:12px}.pfc-save-capture__armed-actions p{margin:0;color:hsl(var(--ink-soft));font-size:12px}.pfc-save-capture.is-armed .pfc-save-capture__control{display:block}.pfc-save-report{margin:0 0 18px;padding:18px;border:1px solid hsl(var(--line));border-radius:11px;background:hsl(var(--surface));box-shadow:0 1px 2px hsl(var(--ink)/.025),0 8px 22px -18px hsl(var(--accent)/.45)}.pfc-save-report__header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.pfc-save-report__header h3{margin:0;font-size:18px}.pfc-save-report__header p{margin:3px 0 0;color:hsl(var(--ink-faint));font-size:12.5px}.pfc-save-metrics{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:0;margin:17px 0;border:1px solid hsl(var(--line));border-radius:9px;overflow:hidden}.pfc-save-metrics div{padding:11px 13px;border-right:1px solid hsl(var(--line));background:hsl(var(--surface-2)/.32)}.pfc-save-metrics div:last-child{border-right:0}.pfc-save-metrics dt{color:hsl(var(--ink-faint));font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.065em}.pfc-save-metrics dd{margin:3px 0 0;color:hsl(var(--ink));font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}.pfc-save-verdict{padding:11px 13px;border:1px solid hsl(var(--good)/.2);border-radius:7px;background:hsl(var(--good-soft));color:hsl(var(--ink-soft))}.pfc-save-verdict--warning{border-color:hsl(var(--warning)/.25);background:hsl(var(--warning-soft))}.pfc-save-verdict--high{border-color:hsl(var(--high)/.22);background:hsl(var(--high-soft))}.pfc-save-verdict--critical{border-color:hsl(var(--critical)/.25);background:hsl(var(--critical-soft))}.pfc-save-report h4{margin:20px 0 8px;font-size:14px}
 @media(max-width:1050px){.pfc-save-capture__layout{grid-template-columns:1fr}.pfc-save-capture__journey{border-top:1px solid hsl(var(--line));border-left:0}.pfc-save-capture__journey ol{grid-template-columns:repeat(3,minmax(0,1fr))}.pfc-save-capture__assurance{grid-template-columns:20px minmax(0,1fr)}.pfc-save-capture__assurance p{grid-column:2;padding:0;border-left:0}.pfc-save-metrics{grid-template-columns:repeat(3,1fr)}.pfc-save-metrics div{border-bottom:1px solid hsl(var(--line))}}
 @media(max-width:782px){.pfc-save-capture__header,.pfc-save-capture__control,.pfc-save-capture__journey,.pfc-save-capture__assurance{padding-left:16px;padding-right:16px}.pfc-capture-choices,.pfc-save-capture__journey ol{grid-template-columns:1fr}.pfc-save-capture__submit,.pfc-save-capture__armed-actions{align-items:stretch;flex-direction:column}.pfc-save-capture__submit .button,.pfc-save-capture__armed-actions .button{width:100%}.pfc-save-capture__assurance{grid-template-columns:20px minmax(0,1fr)}.pfc-save-metrics{grid-template-columns:1fr}.pfc-save-metrics div{border-right:0}.pfc-save-report__header{align-items:flex-start;flex-direction:column}}
+
+
+/* 3.1.9: incident cards, route chips and action spacing. Scopes override
+   generic WordPress admin and earlier .cgm-pfc-root details rules. */
+.cgm-pfc-root .pfc-incidents { gap:18px; }
+.cgm-pfc-root .pfc-incident { box-sizing:border-box; }
+.cgm-pfc-root .pfc-incident__header { padding:15px 20px; }
+.cgm-pfc-root .pfc-incident__body { padding:20px; gap:clamp(18px,2.6vw,36px); }
+.cgm-pfc-root .pfc-incident__summary h3 { margin:0 0 12px; line-height:1.35; }
+.cgm-pfc-root .pfc-incident__summary p { margin:0 0 12px; line-height:1.65; max-width:78ch; }
+.cgm-pfc-root .pfc-incident__summary .pfc-incident__recommendation { margin:16px 0 0; padding-top:14px; }
+.cgm-pfc-root .pfc-incident__context { margin:0 20px 16px; padding:12px 14px; line-height:1.6; border:1px solid hsl(var(--line)); background:hsl(var(--surface-2)/.48); border-radius:8px; color:hsl(var(--ink-soft)); }
+.cgm-pfc-root details.pfc-incident__routes { margin:0 20px 18px!important; overflow:hidden; background:hsl(var(--surface-2)/.25); border-radius:9px; }
+.cgm-pfc-root .pfc-incident__routes > summary { display:flex; align-items:center; flex-wrap:wrap; column-gap:9px; row-gap:5px; min-height:44px; padding:10px 14px; background:transparent; }
+.cgm-pfc-root .pfc-incident__routes > summary:before { flex:0 0 20px; margin:0 2px 0 0; vertical-align:middle; }
+.cgm-pfc-root .pfc-incident__route-count { margin-left:auto; color:hsl(var(--ink-faint)); font-size:11px; font-weight:500; }
+.cgm-pfc-root details.pfc-incident__routes > .pfc-incident__route-content { padding:12px 14px 16px; border-top:1px solid hsl(var(--line)); }
+.cgm-pfc-root .pfc-incident__routes ul { display:grid; gap:8px; margin:0!important; padding:0!important; list-style:none!important; }
+.cgm-pfc-root .pfc-incident__routes li { min-width:0; margin:0; padding:0; }
+.cgm-pfc-root .pfc-incident__routes code { display:block; max-width:100%; width:max-content; box-sizing:border-box; overflow-wrap:anywhere; white-space:normal; line-height:1.45; padding:5px 9px; border-radius:6px; font-size:12px; }
+.cgm-pfc-root .pfc-incident__actions { padding:16px 20px; gap:10px; }
+.cgm-pfc-root .pfc-incident__actions form { display:flex; align-items:center; gap:10px; margin:0; }
+.cgm-pfc-root .pfc-incident__actions .button,
+.cgm-pfc-root .pfc-incident__actions .button-link { display:inline-flex; align-items:center; justify-content:center; min-height:42px; margin:0!important; white-space:normal; text-align:center; }
+.cgm-pfc-root .pfc-incident__actions .button-link { padding:8px 10px!important; }
+.cgm-pfc-root .pfc-incident__facts { min-width:0; }
+.cgm-pfc-root .pfc-incident__facts div { padding:10px 0; }
+@media(max-width:900px) {
+  .cgm-pfc-root .pfc-incident__body { gap:16px; }
+  .cgm-pfc-root .pfc-incident__facts { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@media(max-width:782px) {
+  .cgm-pfc-root .pfc-incident__header,
+  .cgm-pfc-root .pfc-incident__body,
+  .cgm-pfc-root .pfc-incident__actions { padding:14px; }
+  .cgm-pfc-root .pfc-incident__facts { grid-template-columns:1fr; }
+  .cgm-pfc-root details.pfc-incident__routes { margin:0 14px 14px!important; }
+  .cgm-pfc-root .pfc-incident__context { margin:0 14px 14px; }
+  .cgm-pfc-root .pfc-incident__route-count { margin-left:0; }
+  .cgm-pfc-root .pfc-incident__actions,
+  .cgm-pfc-root .pfc-incident__actions form { flex-direction:column; align-items:stretch; width:100%; }
+  .cgm-pfc-root .pfc-incident__actions .button,
+  .cgm-pfc-root .pfc-incident__actions .button-link { width:100%; }
+}
+
+/* Consistent inset spacing for diagnostic details across Cache & Redis,
+   especially sections that contain direct paragraph/table/form children. */
+.cgm-pfc-root .pfc-box details > p,
+.cgm-pfc-root .pfc-box details > form,
+.cgm-pfc-root .pfc-box details > ul,
+.cgm-pfc-root .pfc-box details > ol { margin:14px!important; }
+.cgm-pfc-root .pfc-box details > table.widefat { width:calc(100% - 28px)!important; margin:14px!important; max-width:calc(100% - 28px); }
+.cgm-pfc-root .pfc-box details > p.description { line-height:1.55; }
+.cgm-pfc-root .pfc-box details > form.pfc-form-row { align-items:flex-end; }
+.cgm-pfc-root .pfc-box details > p + table.widefat { margin-top:8px!important; }
+.cgm-pfc-root .pfc-incident__route-content p { margin:12px 0 0; line-height:1.6; }
+/* 3.1.10: Native Object Cache Pro evidence panel. */
+.pfc-native-tracking{margin:18px 0 20px;padding:18px 20px;border:1px solid #cdd7e5;border-left:4px solid #6054bf;background:#fbfcff;border-radius:9px}
+.pfc-native-tracking h4{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 10px;font-size:16px}
+.pfc-native-tracking details{margin:12px 0 8px;padding:10px 12px;border:1px solid #d9e0ea;border-radius:6px;background:#fff}
+.pfc-native-tracking details summary{cursor:pointer;font-weight:600}
+.pfc-native-tracking ol{margin:10px 0 8px 22px}
+.pfc-tracking-priority{font-size:11px;padding:3px 8px;border-radius:999px;background:#f6eef5;color:#82316a;font-weight:700;letter-spacing:.015em}
+.pfc-tracking-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}
+.pfc-tracking-status-grid>div{min-width:0;border:1px solid #e2e6ee;background:white;border-radius:7px;padding:10px 12px;overflow-wrap:anywhere}
+.pfc-tracking-status-grid strong{display:block;margin-top:5px}
+.pfc-tracking-label{display:block;color:#637083;font-size:12px}
+.pfc-tracking-report-form{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:14px 0}
+.pfc-tracking-report-form label{flex:1 0 230px}
+.pfc-tracking-report-form select{max-width:100%;min-height:34px}
+.pfc-scroll-x{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}
+.pfc-scroll-x table{min-width:760px}
+.pfc-scroll-x td code{white-space:normal;overflow-wrap:anywhere}
+@media(max-width:782px){.pfc-native-tracking{padding:14px}.pfc-tracking-status-grid{grid-template-columns:1fr}.pfc-tracking-report-form{align-items:stretch;flex-direction:column}.pfc-tracking-report-form label,.pfc-tracking-report-form select,.pfc-tracking-report-form button{width:100%;flex:none}}
+
+/* 3.1.11: readable Key Tracking evidence matrix and safe diagnostic tables. */
+.pfc-ocp-triage{border:1px solid #d7dfea;border-radius:10px;background:#fafbfd;padding:15px 18px;margin:14px 0 18px}
+.pfc-ocp-triage h5{font-size:14px;margin:0 0 9px}
+.pfc-ocp-triage p{margin:8px 0 12px;max-width:95ch}
+.pfc-ocp-triage-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:12px 0}
+.pfc-ocp-triage-grid>div{display:flex;flex-direction:column;gap:5px;padding:11px 12px;background:white;border:1px solid #dfe4ed;border-radius:7px;min-width:0}
+.pfc-ocp-triage-grid strong{overflow-wrap:anywhere}
+@media(max-width:790px){.pfc-ocp-triage-grid{grid-template-columns:1fr}.pfc-ocp-triage{padding:12px}}
+
+/* 3.1.12: align safe native-error classifier and inventory comparison. */
+.pfc-tracking-report-form textarea{width:100%;max-width:650px;box-sizing:border-box;display:block;margin:7px 0 10px;padding:9px 11px;min-height:64px;resize:vertical;overflow-wrap:anywhere}
+.pfc-tracking-report-form label{display:block;margin-top:13px}
+.pfc-tracking-report-form .description{max-width:78ch;line-height:1.6;margin:7px 0 12px}
+.pfc-native-tracking details{margin:14px 0}
+.pfc-native-tracking .widefat{margin:12px 0 18px}
+@media(max-width:782px){.pfc-tracking-report-form textarea{max-width:100%}}
