@@ -297,4 +297,100 @@ final class PFC_CLI {
         $rows=array(); foreach(array('php_ms','db_ms','query_count','http_ms','http_count','memory_peak') as $k){$rows[]=array('metric'=>$k,'a'=>$a[$k],'b'=>$b[$k],'delta'=>(float)$b[$k]-(float)$a[$k]);}
         WP_CLI\Utils\format_items('table',$rows,array('metric','a','b','delta'));
     }
+
+    /** Compare traffic before and after each recent recorded change. ## OPTIONS [--limit=<n>] [--json] */
+    public function changes( $args, $assoc ) {
+        $rows = PFC_Change_Impact::recent( (int) ( $assoc['limit'] ?? 10 ) );
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( $rows, JSON_PRETTY_PRINT ) ); return; }
+        if ( ! $rows ) { WP_CLI::success( 'No changes have been recorded yet.' ); return; }
+        $table = array();
+        foreach ( $rows as $record ) {
+            $table[] = array(
+                'id'      => $record['change']['id'],
+                'when'    => $record['change']['created_at'],
+                'change'  => $record['change']['change_type'] . ' ' . $record['change']['object_name'],
+                'verdict' => $record['verdict'],
+                'php_ms'  => $this->impact_cell( $record, 'server_php_ms' ),
+                'ttfb'    => $this->impact_cell( $record, 'ttfb' ),
+                'lcp'     => $this->impact_cell( $record, 'lcp' ),
+            );
+        }
+        WP_CLI\Utils\format_items( 'table', $table, array( 'id','when','change','verdict','php_ms','ttfb','lcp' ) );
+    }
+
+    private function impact_cell( array $record, $metric ) {
+        $comparison = (array) ( $record['metrics'][ $metric ] ?? array() );
+        if ( empty( $comparison ) || in_array( (string) ( $comparison['verdict'] ?? 'insufficient' ), array( 'insufficient', 'pending' ), true ) ) { return '—'; }
+        return ( $comparison['percent'] >= 0 ? '+' : '' ) . $comparison['percent'] . '% ' . $comparison['verdict'];
+    }
+
+    /** Enforce performance budgets; exits non-zero on a breach so CI can gate a deploy. ## OPTIONS [--days=<n>] [--route-group=<group>] [--allow-missing] [--lcp=<ms>] [--ttfb=<ms>] [--inp=<ms>] [--cls=<score>] [--php=<ms>] [--queries=<n>] [--json] */
+    public function budget( $args, $assoc ) {
+        $overrides = array();
+        foreach ( array( 'lcp', 'ttfb', 'inp', 'cls', 'queries' ) as $flag ) {
+            if ( isset( $assoc[ $flag ] ) ) { $overrides[ $flag ] = $assoc[ $flag ]; }
+        }
+        if ( isset( $assoc['php'] ) ) { $overrides['server_php_ms'] = $assoc['php']; }
+        $days = (int) ( $assoc['days'] ?? 1 );
+        $route_group = (string) ( $assoc['route-group'] ?? '' );
+        $require_data = empty( $assoc['allow-missing'] );
+        $report = PFC_Budget::report( $days, $route_group, $overrides, $require_data );
+        if ( ! empty( $assoc['json'] ) ) {
+            WP_CLI::log( wp_json_encode( $report, JSON_PRETTY_PRINT ) );
+        } else {
+            $rows = array();
+            foreach ( $report['checks'] as $check ) {
+                $rows[] = array(
+                    'status'   => strtoupper( $check['status'] ),
+                    'budget'   => $check['label'],
+                    'observed' => PFC_Budget::format_value( $check['key'], $check['value'] ),
+                    'limit'    => PFC_Budget::format_value( $check['key'], $check['limit'] ),
+                    'samples'  => $check['samples'],
+                );
+            }
+            WP_CLI\Utils\format_items( 'table', $rows, array( 'status','budget','observed','limit','samples' ) );
+        }
+        if ( ! $report['pass'] ) {
+            $messages = array();
+            foreach ( $report['checks'] as $check ) {
+                if ( in_array( $check['status'], array( 'fail', 'no_data' ), true ) ) { $messages[] = PFC_Budget::describe( $check ); }
+            }
+            WP_CLI::error( 'Performance budget failed: ' . implode( '; ', $messages ) );
+        }
+        WP_CLI::success( 'Performance budgets passed for the last ' . $days . ' day(s).' );
+    }
+
+    /** Rank repeated reads by the time caching would plausibly save. ## OPTIONS [--days=<n>] [--limit=<n>] [--json] */
+    public function cacheability( $args, $assoc ) {
+        $report = PFC_Cacheability::analyze( (int) ( $assoc['days'] ?? 7 ), (int) ( $assoc['limit'] ?? 20 ) );
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( $report, JSON_PRETTY_PRINT ) ); return; }
+        if ( empty( $report['rows'] ) ) { WP_CLI::success( 'No repeated query patterns were recorded in the window.' ); return; }
+        $rows = array();
+        foreach ( $report['rows'] as $row ) {
+            $rows[] = array(
+                'cacheable' => ! empty( $row['cacheable'] ) ? 'yes' : 'no',
+                'calls'     => $row['calls'],
+                'total_ms'  => $row['total_ms'],
+                'saved_ms'  => $row['saved_ms'],
+                'component' => $row['component'],
+                'reason'    => $row['reason'],
+                'sql'       => PFC_Utils::truncate( (string) $row['sql'], 80 ),
+            );
+        }
+        WP_CLI\Utils\format_items( 'table', $rows, array( 'cacheable','calls','total_ms','saved_ms','component','reason','sql' ) );
+        WP_CLI::success( 'Estimated cacheable saving: ' . $report['saved_ms_total'] . ' ms across ' . $report['cacheable_count'] . ' pattern(s).' );
+    }
+
+    /** Show the bootstrap waterfall and the static per-plugin include footprint. ## OPTIONS [--json] */
+    public function boot( $args, $assoc ) {
+        $report = PFC_Bootstrap_Timeline::report();
+        if ( ! empty( $assoc['json'] ) ) { WP_CLI::log( wp_json_encode( $report, JSON_PRETTY_PRINT ) ); return; }
+        if ( empty( $report['waterfall']['steps'] ) ) { WP_CLI::warning( 'No deep profile with phase timings has been recorded yet. Run: wp performance profile <url>' ); return; }
+        WP_CLI\Utils\format_items( 'table', $report['waterfall']['steps'], array( 'label','ms','share' ) );
+        WP_CLI::log( 'Measured total: ' . $report['waterfall']['total_ms'] . ' ms (' . $report['measurement'] . ')' );
+        if ( ! empty( $report['footprint']['components'] ) ) {
+            WP_CLI::log( 'Static include footprint (files and bytes, not duration):' );
+            WP_CLI\Utils\format_items( 'table', $report['footprint']['components'], array( 'type','slug','files','bytes' ) );
+        }
+    }
 }

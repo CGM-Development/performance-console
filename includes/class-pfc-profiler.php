@@ -433,6 +433,12 @@ final class PFC_Profiler {
                 PFC_Bricks_Inspector::summary(), (array) $run_payload['callback_profile'] );
         }
         $run_payload['phases'] = $phases;
+        // Static include footprint per plugin/theme. Deep requests are opt-in and
+        // already pay instrumentation overhead, so the extra filesize() pass is
+        // bounded there and never runs on sampled production traffic.
+        if ( $deep && class_exists( 'PFC_Bootstrap_Timeline' ) ) {
+            $run_payload['plugin_footprint'] = PFC_Bootstrap_Timeline::footprint();
+        }
         $run_payload['hook_ms'] = array_map( static function ( $v ) { return round( $v, 3 ); }, self::$hook_totals );
         $run_payload['database_errors'] = self::database_errors( (array) $EZSQL_ERROR, $trace_map );
         $run_payload['included_files'] = count( get_included_files() );

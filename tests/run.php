@@ -17,6 +17,10 @@ function home_url( $path = '' ) { return 'http://example.test:8080' . $path; }
 require_once dirname( __DIR__ ) . '/includes/class-pfc-utils.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-db.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-bootstrap.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-change-impact.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-budget.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-cacheability.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-bootstrap-timeline.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-database-health.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-database-repair.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-profiler.php';
@@ -241,6 +245,145 @@ test_case( 'legacy wpi database backups stay verifiable after migration', static
     exec( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __DIR__ . '/backup-legacy.php' ), $output, $code );
     assert_same( 0, $code );
     assert_same( 'accepted', implode( '', $output ) );
+} );
+
+test_case( 'change impact: a sustained improvement clears the noise floor', static function (): void {
+    $before = array(); $after = array();
+    for ( $i = 0; $i < 20; $i++ ) { $before[] = 800 + ( $i % 5 ) * 4; $after[] = 600 + ( $i % 5 ) * 4; }
+    $result = PFC_Change_Impact::classify( $before, $after, 10.0 );
+    assert_same( 'improved', $result['verdict'] );
+    assert_same( -200.0, $result['delta'] );
+    assert_same( true, in_array( $result['confidence'], array( 'medium', 'high' ), true ) );
+} );
+
+test_case( 'change impact: a sustained regression is reported as worse', static function (): void {
+    $before = array(); $after = array();
+    for ( $i = 0; $i < 20; $i++ ) { $before[] = 600 + ( $i % 4 ) * 5; $after[] = 900 + ( $i % 4 ) * 5; }
+    $result = PFC_Change_Impact::classify( $before, $after, 10.0 );
+    assert_same( 'worse', $result['verdict'] );
+    assert_same( true, $result['delta'] > 0 );
+} );
+
+test_case( 'change impact: a shift inside the observed spread is not a result', static function (): void {
+    $before = array(); $after = array();
+    for ( $i = 0; $i < 20; $i++ ) { $before[] = $i % 2 ? 780 : 820; $after[] = 810; }
+    $result = PFC_Change_Impact::classify( $before, $after, 10.0 );
+    assert_same( 'no_measurable_change', $result['verdict'] );
+    assert_same( 10.0, $result['delta'] );
+} );
+
+test_case( 'change impact: thin windows are never given a verdict', static function (): void {
+    $result = PFC_Change_Impact::classify( array( 800, 810, 790 ), array( 600, 610, 590 ), 10.0 );
+    assert_same( 'insufficient', $result['verdict'] );
+    assert_same( 3, $result['before_samples'] );
+} );
+
+test_case( 'change impact: a change is not assessable before the settled window fills', static function (): void {
+    $windows = PFC_Change_Impact::windows( '2026-01-01 00:00:00', strtotime( '2026-01-01 02:00:00 UTC' ) );
+    assert_same( 'pending', $windows['state'] );
+    $settled = PFC_Change_Impact::windows( '2026-01-01 00:00:00', strtotime( '2026-01-03 00:00:00 UTC' ) );
+    assert_same( 'assessable', $settled['state'] );
+} );
+
+test_case( 'change impact: traffic mix drift is measured in percentage points', static function (): void {
+    $drift = PFC_Change_Impact::mix_drift(
+        array( 'front-page' => 0.60, 'singular:post' => 0.40 ),
+        array( 'front-page' => 0.30, 'singular:post' => 0.70 )
+    );
+    assert_same( 30.0, $drift );
+} );
+
+test_case( 'budget thresholds clamp to bounds and drop unknown keys', static function (): void {
+    $thresholds = PFC_Budget::normalise( array( 'lcp' => 999999, 'cls' => -3, 'nope' => 5 ) );
+    assert_same( 600000.0, $thresholds['lcp'] );
+    assert_same( 0.0, $thresholds['cls'] );
+    assert_same( 800.0, $thresholds['ttfb'] );
+    assert_same( false, array_key_exists( 'nope', $thresholds ) );
+} );
+
+test_case( 'budget evaluation fails only the breached budget', static function (): void {
+    $measured = array( 'values' => array(
+        'ttfb'          => array( 'value' => 700, 'samples' => 100, 'source' => 'rum' ),
+        'lcp'           => array( 'value' => 3000, 'samples' => 100, 'source' => 'rum' ),
+        'inp'           => array( 'value' => 150, 'samples' => 100, 'source' => 'rum' ),
+        'cls'           => array( 'value' => 0.05, 'samples' => 100, 'source' => 'rum' ),
+        'server_php_ms' => array( 'value' => 400, 'samples' => 50, 'source' => 'runs' ),
+        'queries'       => array( 'value' => 40, 'samples' => 50, 'source' => 'runs' ),
+    ) );
+    $result = PFC_Budget::evaluate( $measured, PFC_Budget::DEFAULTS );
+    assert_same( false, $result['pass'] );
+    assert_same( array( 'lcp' ), $result['failed'] );
+    $statuses = array();
+    foreach ( $result['checks'] as $check ) { $statuses[ $check['key'] ] = $check['status']; }
+    assert_same( 'fail', $statuses['lcp'] );
+    assert_same( 'pass', $statuses['ttfb'] );
+} );
+
+test_case( 'budget with no traffic fails only when data is required', static function (): void {
+    $measured = array( 'values' => array(
+        'ttfb'          => array( 'value' => 700, 'samples' => 100, 'source' => 'rum' ),
+        'inp'           => array( 'value' => 150, 'samples' => 100, 'source' => 'rum' ),
+        'cls'           => array( 'value' => 0.05, 'samples' => 100, 'source' => 'rum' ),
+        'server_php_ms' => array( 'value' => 400, 'samples' => 50, 'source' => 'runs' ),
+        'queries'       => array( 'value' => 40, 'samples' => 50, 'source' => 'runs' ),
+    ) );
+    $strict = PFC_Budget::evaluate( $measured, PFC_Budget::DEFAULTS, true );
+    assert_same( false, $strict['pass'] );
+    assert_same( array( 'lcp' ), $strict['missing'] );
+    $lenient = PFC_Budget::evaluate( $measured, PFC_Budget::DEFAULTS, false );
+    assert_same( true, $lenient['pass'] );
+} );
+
+test_case( 'budget reports a disabled budget without failing it', static function (): void {
+    $thresholds = PFC_Budget::normalise( array( 'lcp' => 0 ) );
+    $checks = PFC_Budget::evaluate( array( 'values' => array() ), $thresholds, false );
+    $lcp = null;
+    foreach ( $checks['checks'] as $check ) { if ( 'lcp' === $check['key'] ) { $lcp = $check; } }
+    assert_same( 'disabled', $lcp['status'] );
+    assert_same( true, $checks['pass'] );
+} );
+
+test_case( 'cacheability keeps deterministic reads and rejects unsafe ones', static function (): void {
+    assert_same( true, PFC_Cacheability::classify( 'SELECT * FROM wp_posts WHERE ID = ?' )['cacheable'] );
+    assert_same( 'write', PFC_Cacheability::classify( 'UPDATE wp_posts SET post_title = ? WHERE ID = ?' )['reason'] );
+    assert_same( 'not_read', PFC_Cacheability::classify( 'SHOW TABLES' )['reason'] );
+    assert_same( 'locking_read', PFC_Cacheability::classify( 'SELECT * FROM wp_posts WHERE ID = ? FOR UPDATE' )['reason'] );
+    assert_same( 'non_deterministic', PFC_Cacheability::classify( 'SELECT * FROM wp_posts WHERE post_date > NOW()' )['reason'] );
+    assert_same( 'user_scoped', PFC_Cacheability::classify( 'SELECT * FROM wp_usermeta WHERE user_id = ?' )['reason'] );
+    assert_same( 'found_rows', PFC_Cacheability::classify( 'SELECT SQL_CALC_FOUND_ROWS * FROM wp_posts' )['reason'] );
+    assert_same( 'review_cte', PFC_Cacheability::classify( 'WITH recent AS (SELECT ID FROM wp_posts) SELECT * FROM recent' )['reason'] );
+} );
+
+test_case( 'bootstrap waterfall orders phases and computes shares', static function (): void {
+    $waterfall = PFC_Bootstrap_Timeline::from_phases( array(
+        'plugins_loaded_to_init'              => 100.5,
+        'mu_plugin_bootstrap_to_muplugins_loaded' => 20.0,
+        'muplugins_loaded_to_plugins_loaded'  => 80.0,
+        'malformed_phase_key'                 => 999.0,
+    ) );
+    assert_same( 3, count( $waterfall['steps'] ) );
+    assert_same( 'muplugins_loaded', $waterfall['steps'][0]['to'] );
+    assert_same( 'init', $waterfall['steps'][2]['to'] );
+    assert_same( 200.5, $waterfall['total_ms'] );
+    assert_same( 'Init', $waterfall['largest']['label'] );
+    assert_same( 50.1, $waterfall['steps'][2]['share'] );
+} );
+
+test_case( 'bootstrap footprint groups includes by component', static function (): void {
+    $classifier = static function ( $file ) {
+        if ( false !== strpos( $file, '/plugins/alpha/' ) ) { return array( 'type' => 'plugin', 'slug' => 'alpha' ); }
+        return array( 'type' => 'theme', 'slug' => 'sampletheme' );
+    };
+    $footprint = PFC_Bootstrap_Timeline::footprint(
+        array( '/srv/wp-content/plugins/alpha/a.php', '/srv/wp-content/plugins/alpha/b.php', '/srv/wp-content/themes/sampletheme/styles.php' ),
+        $classifier
+    );
+    assert_same( 3, $footprint['totals']['files'] );
+    $by_slug = array();
+    foreach ( $footprint['components'] as $component ) { $by_slug[ $component['slug'] ] = $component; }
+    assert_same( 2, $by_slug['alpha']['files'] );
+    assert_same( 1, $by_slug['sampletheme']['files'] );
+    assert_same( 'static_includes', $footprint['measured'] );
 } );
 
 $failures = 0;
