@@ -568,6 +568,34 @@ test_case( 'autoload budget reports both dimension breaches', static function ()
     assert_same( false, $under['over_count'] );
 } );
 
+test_case( 'autoload budget protects core options without optional classes', static function (): void {
+    // The protection must live in this class, not only in PFC_Database_Repair:
+    // that class is absent on some request paths, and the old class_exists()
+    // guard silently disabled every check there.
+    foreach ( array( 'siteurl', 'home', 'blogname', 'active_plugins', 'cron', 'db_version' ) as $must_have ) {
+        assert_same( true, in_array( $must_have, PFC_Autoload_Budget::PROTECTED_OPTIONS, true ), 'missing from the local denylist: ' . $must_have );
+    }
+    foreach ( array( 'siteurl', 'home', 'blogname', 'active_plugins', 'cron', 'widget_block', 'theme_mods_twentytwentyfive', 'pfc_secret', 'pfc_runtime_levers' ) as $protected ) {
+        assert_same( true, PFC_Autoload_Budget::protected_option( $protected ), 'expected protection for ' . $protected );
+    }
+    foreach ( array( 'woocommerce_currency', 'my_plugin_cache', 'siteurl_backup' ) as $allowed ) {
+        assert_same( false, PFC_Autoload_Budget::protected_option( $allowed ), 'expected no protection for ' . $allowed );
+    }
+} );
+
+test_case( 'index undo reads the recorded payload rather than the raw column', static function (): void {
+    $row = array(
+        'object_name' => 'wp_postmeta',
+        'after_value' => json_encode( array( 'value' => 'pfc_opt_abc123', 'meta' => array( 'columns' => array( 'post_id', 'meta_key' ) ) ) ),
+    );
+    $recorded = PFC_Index_Repair::recorded_index( $row );
+    assert_same( 'wp_postmeta', $recorded['table'] );
+    assert_same( 'pfc_opt_abc123', $recorded['index'] );
+    assert_same( array( 'post_id', 'meta_key' ), $recorded['columns'] );
+    $legacy = PFC_Index_Repair::recorded_index( array( 'object_name' => 'wp_posts', 'after_value' => 'pfc_opt_zzz' ) );
+    assert_same( 'pfc_opt_zzz', $legacy['index'] );
+} );
+
 $failures = 0;
 foreach ( $tests as $test ) {
     list( $name, $callback ) = $test;

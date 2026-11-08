@@ -177,7 +177,7 @@ final class PFC_Index_Repair {
         $parts = array();
         foreach ( $report['columns'] as $column ) { $parts[] = '`' . $column . '`'; }
         $sql = 'ALTER TABLE `' . $report['table'] . '` ADD INDEX `' . $report['name'] . '` (' . implode( ',', $parts ) . ')';
-        if ( 'INPLACE' === ( $report['algorithm'] ?? '' ) ) { $sql .= ' ALGORITHM=INPLACE, LOCK=NONE'; }
+        if ( 'INPLACE' === ( $report['algorithm'] ?? '' ) ) { $sql .= ', ALGORITHM=INPLACE, LOCK=NONE'; }
 
         $old = $wpdb->suppress_errors( true );
         $result = $wpdb->query( $sql ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -210,13 +210,33 @@ final class PFC_Index_Repair {
         );
     }
 
+    /**
+     * The table and index names recorded by a creation change.
+     *
+     * record() wraps its payload as {value, meta} whenever metadata is supplied,
+     * so the index name is $after['value'], not the raw column. Reading it raw
+     * made every undo fail its identifier check.
+     *
+     * @return array{table:string,index:string,columns:array}
+     */
+    public static function recorded_index( array $row ) {
+        $stored = PFC_Change_Impact::decode( (string) ( $row['after_value'] ?? '' ) );
+        $metadata = is_array( $stored['meta'] ?? null ) ? $stored['meta'] : array();
+        return array(
+            'table'   => (string) ( $row['object_name'] ?? '' ),
+            'index'   => (string) ( $stored['value'] ?? '' ),
+            'columns' => array_values( (array) ( $metadata['columns'] ?? array() ) ),
+        );
+    }
+
     /** Drop only an index this plugin created and recorded. */
     public static function undo( $change_id ) {
         global $wpdb;
         $row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . PFC_Utils::table( 'changes' ) . ' WHERE id=%d AND change_type=%s', (int) $change_id, self::CHANGE_TYPE ), ARRAY_A );
         if ( ! $row ) { return new WP_Error( 'pfc_index_undo_missing', 'No Performance Console index creation matches that change ID.' ); }
-        $table = (string) $row['object_name'];
-        $index = (string) $row['after_value'];
+        $recorded = self::recorded_index( $row );
+        $table = $recorded['table'];
+        $index = $recorded['index'];
         if ( ! self::valid_name( $table ) || ! self::valid_name( $index ) || 0 !== strpos( $index, 'pfc_opt_' ) ) {
             return new WP_Error( 'pfc_index_undo_invalid', 'The recorded identifiers are not in the managed form.' );
         }

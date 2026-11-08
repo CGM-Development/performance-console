@@ -19,6 +19,30 @@ final class PFC_Autoload_Budget {
     const MAX_OFFENDERS = 25;
     const CHANGE_TYPE = 'autoload_bulk_off';
 
+    /**
+     * Options that must keep autoloading, whatever else says otherwise.
+     *
+     * This list lives here rather than depending on PFC_Database_Repair: that
+     * class is only loaded on admin, REST and WP-CLI paths, so a
+     * `class_exists()` guard silently removed the protection in a bare PHP
+     * context. Core bootstrap options keep their autoload, and the plugin's own
+     * state is never touched.
+     */
+    const PROTECTED_OPTIONS = array(
+        'siteurl', 'home', 'blogname', 'blogdescription', 'admin_email', 'users_can_register', 'default_role',
+        'start_of_week', 'permalink_structure', 'rewrite_rules', 'active_plugins', 'template', 'stylesheet',
+        'current_theme', 'cron', 'sidebars_widgets', 'wp_user_roles', 'db_version', 'upload_path', 'upload_url_path',
+        'pfc_runtime', 'pfc_runtime_levers', 'pfc_secret', 'pfc_db_version', 'pfc_last_scan', 'pfc_budgets',
+    );
+
+    /** Core, plugin-owned and widget/theme-mod option names are never toggled. */
+    public static function protected_option( $name ) {
+        $name = (string) $name;
+        if ( in_array( $name, self::PROTECTED_OPTIONS, true ) ) { return true; }
+        if ( 0 === strpos( $name, 'widget_' ) || 0 === strpos( $name, 'theme_mods_' ) || 0 === strpos( $name, 'pfc_' ) ) { return true; }
+        return class_exists( 'PFC_Database_Repair' ) && PFC_Database_Repair::protected_option( $name );
+    }
+
     /** WordPress has used yes/no and then on/off/auto-on/auto-off across versions. */
     public static function is_autoloaded( $value ) {
         return in_array( strtolower( trim( (string) $value ) ), array( 'yes', 'on', 'auto-on', '1', 'true' ), true );
@@ -71,7 +95,7 @@ final class PFC_Autoload_Budget {
                 'hits'             => (int) $row['hits'],
                 'sampled_requests' => (int) $row['sampled_requests'],
                 'evidence'         => (int) $row['hits'] > 0 ? 'observed' : 'no evidence',
-                'protected'        => class_exists( 'PFC_Database_Repair' ) && PFC_Database_Repair::protected_option( (string) $row['option_name'] ),
+                'protected'        => self::protected_option( (string) $row['option_name'] ),
             );
         }
         return $out;
@@ -95,7 +119,7 @@ final class PFC_Autoload_Budget {
         $skipped = array();
         foreach ( $names as $name ) {
             if ( '' === $name ) { continue; }
-            if ( class_exists( 'PFC_Database_Repair' ) && PFC_Database_Repair::protected_option( $name ) ) { $skipped[] = $name . ' (protected)'; continue; }
+            if ( self::protected_option( $name ) ) { $skipped[] = $name . ' (protected)'; continue; }
             $current = $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name=%s", $name ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
             if ( null === $current ) { $skipped[] = $name . ' (missing)'; continue; }
             if ( ! self::is_autoloaded( $current ) ) { $skipped[] = $name . ' (already off)'; continue; }
