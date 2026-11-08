@@ -22,6 +22,10 @@ require_once dirname( __DIR__ ) . '/includes/class-pfc-budget.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-cacheability.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-asset-ledger.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-attribution.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-index-repair.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-runtime-levers.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-cron-repair.php';
+require_once dirname( __DIR__ ) . '/includes/class-pfc-autoload-budget.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-bootstrap-timeline.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-database-health.php';
 require_once dirname( __DIR__ ) . '/includes/class-pfc-database-repair.php';
@@ -478,6 +482,90 @@ test_case( 'attribution sanitises client values and clamps sizes', static functi
 test_case( 'attribution rejects unknown tags and non-positive values', static function (): void {
     $clean = PFC_Attribution::sanitize( array( 'lcp_tag' => '<script>alert(1)</script>', 'lcp_bytes' => 0, 'long_task_count' => -5 ) );
     assert_same( array(), $clean );
+} );
+
+test_case( 'index repair validates identifiers and caps the column list', static function (): void {
+    assert_same( true, PFC_Index_Repair::valid_name( 'wp_posts' ) );
+    assert_same( false, PFC_Index_Repair::valid_name( 'wp-posts`; DROP TABLE x' ) );
+    assert_same( false, PFC_Index_Repair::valid_name( '' ) );
+    assert_same( array( 'post_type', 'post_status' ), PFC_Index_Repair::normalize_columns( array( 'post_type', 'post_status' ) ) );
+    assert_same( array( 'ID' ), PFC_Index_Repair::normalize_columns( array( 'ID', 'id' ) ) );
+    assert_same( array(), PFC_Index_Repair::normalize_columns( array( 'a', 'b', 'c', 'd' ) ) );
+    assert_same( array(), PFC_Index_Repair::normalize_columns( array( 'bad column' ) ) );
+} );
+
+test_case( 'index repair names are deterministic and managed', static function (): void {
+    $first = PFC_Index_Repair::index_name( 'wp_postmeta', array( 'post_id', 'meta_key' ) );
+    $second = PFC_Index_Repair::index_name( 'wp_postmeta', array( 'post_id', 'meta_key' ) );
+    $other = PFC_Index_Repair::index_name( 'wp_postmeta', array( 'meta_key' ) );
+    assert_same( $first, $second );
+    assert_same( false, $first === $other );
+    assert_same( 'pfc_opt_', substr( $first, 0, 8 ) );
+} );
+
+test_case( 'runtime levers clamp input and coerce booleans safely', static function (): void {
+    $normalised = PFC_Runtime_Levers::normalise( array(
+        'heartbeat' => array( 'enabled' => 'false', 'interval' => 5 ),
+        'revisions' => array( 'enabled' => 1, 'keep' => 999 ),
+    ) );
+    assert_same( false, $normalised['heartbeat']['enabled'] );
+    assert_same( PFC_Runtime_Levers::HEARTBEAT_MIN, $normalised['heartbeat']['interval'] );
+    assert_same( true, $normalised['revisions']['enabled'] );
+    assert_same( PFC_Runtime_Levers::REVISIONS_MAX, $normalised['revisions']['keep'] );
+    $defaults = PFC_Runtime_Levers::normalise( array() );
+    assert_same( false, $defaults['heartbeat']['enabled'] );
+    assert_same( false, $defaults['revisions']['enabled'] );
+} );
+
+test_case( 'runtime lever truthiness does not treat every string as true', static function (): void {
+    assert_same( false, PFC_Runtime_Levers::truthy( 'false' ) );
+    assert_same( false, PFC_Runtime_Levers::truthy( 'off' ) );
+    assert_same( false, PFC_Runtime_Levers::truthy( '' ) );
+    assert_same( false, PFC_Runtime_Levers::truthy( 0 ) );
+    assert_same( true, PFC_Runtime_Levers::truthy( 'yes' ) );
+    assert_same( true, PFC_Runtime_Levers::truthy( 1 ) );
+} );
+
+test_case( 'cron analysis separates duplicates from short intervals', static function (): void {
+    $cron = array(
+        1700000000 => array( 'hook_dup' => array( 'a' => array( 'schedule' => 'hourly', 'args' => array() ), 'b' => array( 'schedule' => 'hourly', 'args' => array( 1 ) ) ) ),
+        1700003600 => array( 'hook_dup' => array( 'c' => array( 'schedule' => 'hourly', 'args' => array() ) ) ),
+        1700000100 => array( 'hook_short' => array( 'd' => array( 'schedule' => 'pfc_minute', 'args' => array() ) ) ),
+        1700000200 => array( 'hook_short' => array( 'e' => array( 'schedule' => 'pfc_minute', 'args' => array() ) ) ),
+        1700000090 => array( 'pfc_daily_maintenance' => array( 'f' => array( 'schedule' => 'daily', 'args' => array() ) ) ),
+    );
+    $analysis = PFC_Cron_Repair::analysis( $cron );
+    assert_same( 6, $analysis['total_events'] );
+    assert_same( 2, $analysis['duplicate_hooks'] );
+    assert_same( 1, $analysis['short_interval_hooks'] );
+    $by_hook = array();
+    foreach ( $analysis['hooks'] as $row ) { $by_hook[ $row['hook'] ] = $row; }
+    assert_same( 3, $by_hook['hook_dup']['events'] );
+    assert_same( 2, $by_hook['hook_dup']['timestamps'] );
+    assert_same( 1, $by_hook['hook_dup']['duplicate_same_time'] );
+    assert_same( false, $by_hook['hook_dup']['short_interval'] );
+    assert_same( true, $by_hook['hook_short']['short_interval'] );
+    assert_same( 100, $by_hook['hook_short']['min_gap'] );
+    assert_same( true, $by_hook['pfc_daily_maintenance']['protected'] );
+} );
+
+test_case( 'autoload detection covers every WordPress storage value', static function (): void {
+    foreach ( array( 'yes', 'on', 'auto-on', '1' ) as $value ) {
+        assert_same( true, PFC_Autoload_Budget::is_autoloaded( $value ), 'expected autoload for ' . $value );
+    }
+    foreach ( array( 'no', 'off', 'auto-off', '0', '' ) as $value ) {
+        assert_same( false, PFC_Autoload_Budget::is_autoloaded( $value ), 'expected no autoload for ' . $value );
+    }
+} );
+
+test_case( 'autoload budget reports both dimension breaches', static function (): void {
+    $over = PFC_Autoload_Budget::status( 2097152, 500, 1048576, 400 );
+    assert_same( true, $over['over_bytes'] );
+    assert_same( true, $over['over_count'] );
+    assert_same( 2.0, $over['bytes_ratio'] );
+    $under = PFC_Autoload_Budget::status( 1048576, 400, 1048576, 400 );
+    assert_same( false, $under['over_bytes'] );
+    assert_same( false, $under['over_count'] );
 } );
 
 $failures = 0;

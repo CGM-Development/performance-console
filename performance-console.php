@@ -26,6 +26,10 @@ require_once PFC_DIR . 'includes/class-pfc-budget.php';
 require_once PFC_DIR . 'includes/class-pfc-cacheability.php';
 require_once PFC_DIR . 'includes/class-pfc-asset-ledger.php';
 require_once PFC_DIR . 'includes/class-pfc-attribution.php';
+require_once PFC_DIR . 'includes/class-pfc-index-repair.php';
+require_once PFC_DIR . 'includes/class-pfc-runtime-levers.php';
+require_once PFC_DIR . 'includes/class-pfc-cron-repair.php';
+require_once PFC_DIR . 'includes/class-pfc-autoload-budget.php';
 require_once PFC_DIR . 'includes/class-pfc-bootstrap-timeline.php';
 require_once PFC_DIR . 'includes/class-pfc-sql-inspector.php';
 require_once PFC_DIR . 'includes/class-pfc-http-inspector.php';
@@ -45,6 +49,8 @@ register_deactivation_hook( __FILE__, array( 'PFC_DB', 'deactivate' ) );
 
 add_action( 'plugins_loaded', static function () {
     PFC_DB::maybe_upgrade();
+    // Registered before anything else can read heartbeat or revision settings.
+    PFC_Runtime_Levers::apply();
     PFC_Profiler::init();
     PFC_Object_Cache_Pro::init();
     PFC_REST::init();
