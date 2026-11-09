@@ -623,17 +623,21 @@ final class PFC_Admin {
                 <p class="pfc-suite-subtitle">Production performance console</p>
             </div>
         </header>
+        <div class="pfc-suite-nav-wrap">
         <nav class="pfc-suite-nav" aria-label="<?php esc_attr_e( 'Performance Console sections', 'performance-console' ); ?>">
             <?php foreach ( array( 'overview' => array( 'dashicons-dashboard', __( 'Overview', 'performance-console' ) ), 'findings' => array( 'dashicons-warning', __( 'Incidents', 'performance-console' ) ), 'database' => array( 'dashicons-database', __( 'Database', 'performance-console' ) ), 'profiling' => array( 'dashicons-chart-area', __( 'Profiling', 'performance-console' ) ), 'monitoring' => array( 'dashicons-chart-line', __( 'Monitoring', 'performance-console' ) ), 'system' => array( 'dashicons-admin-tools', __( 'System', 'performance-console' ) ), 'optimize' => array( 'dashicons-superhero', __( 'Optimize', 'performance-console' ) ), 'cache' => array( 'dashicons-performance', __( 'Cache & Redis', 'performance-console' ) ) ) as $view_slug => $view_meta ): ?>
             <a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=' . $view_slug ) . '#' . $view_slug ); ?>" data-pfc-tab="<?php echo esc_attr( $view_slug ); ?>"<?php echo $active_view === $view_slug ? ' aria-current="page"' : ''; ?>><span class="dashicons <?php echo esc_attr( $view_meta[0] ); ?>" aria-hidden="true"></span><?php echo esc_html( $view_meta[1] ); ?><?php if ( 'findings' === $view_slug ): ?> <span class="pfc-nav-count"><?php echo esc_html( $open_issue_total > 999 ? '999+' : (string) $open_issue_total ); ?></span><?php endif; ?></a>
             <?php endforeach; ?>
         </nav>
+        <span class="pfc-suite-nav__overflow" aria-hidden="true"><span class="dashicons dashicons-arrow-right-alt2"></span></span>
+        </div>
         <?php if ( 'optimize' === $active_view ): ?>
         <?php PFC_Optimize::render(); ?>
         <?php endif; ?>
         <?php if ( 'overview' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="overview" id="pfc-view-overview">
         <div class="pfc-view-heading"><h2>Performance health</h2><p>Scan the site, work through confirmed root-cause incidents, and verify each change against the same evidence.</p></div>
+        <?php if ( isset( $_GET['scanned'] ) ): ?><div class="notice notice-success inline" role="status"><p><?php echo 'deep' === ( $_GET['mode'] ?? '' ) ? 'Deep database scan completed. Review the refreshed snapshot and incident evidence.' : 'Production-safe scan completed. Review the refreshed snapshot and incident evidence.'; ?></p></div><?php endif; ?>
         <div class="pfc-actions">
         <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_scan"><?php wp_nonce_field('pfc_scan'); ?><button class="button button-primary"><span class="dashicons dashicons-search" aria-hidden="true"></span>Run Production-Safe Scan</button></form>
         <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_scan"><input type="hidden" name="deep" value="1"><?php wp_nonce_field('pfc_scan'); ?><button class="button"><span class="dashicons dashicons-database" aria-hidden="true"></span>Run Deep Database Scan</button></form>
@@ -649,15 +653,17 @@ final class PFC_Admin {
         <div class="pfc-overview-layout">
             <div class="pfc-box">
                 <h3>Priority queue</h3>
-                <p>Confirmed incidents ranked by severity, recurrence and freshness.</p>
+                <p>Confirmed incidents ranked by severity, recurrence and freshness. History can come from system scans, request logs, or profiling.</p>
                 <?php if ( ! $issues ): ?>
                     <div class="pfc-empty">No open findings yet. Run a scan to establish a baseline.</div>
                 <?php else: ?>
                     <div class="pfc-priority-list">
-                    <?php foreach ( array_slice( $issues, 0, 6 ) as $priority ): ?>
+                    <?php foreach ( array_slice( $issues, 0, 6 ) as $priority ): $priority_message = wp_strip_all_tags( (string) $priority['message'] ); $priority_excerpt = PFC_Utils::truncate( $priority_message, 0, 180 ); ?>
                         <div class="pfc-priority-item">
                             <span class="pfc-status pfc-status--<?php echo esc_attr( $priority['severity'] ); ?>"><?php echo esc_html( strtoupper( $priority['severity'] ) ); ?></span>
-                            <div class="pfc-priority-item__body"><strong><?php echo esc_html( $priority['title'] ); ?></strong><small><?php echo esc_html( wp_strip_all_tags( (string) $priority['message'] ) ); ?></small></div>
+                            <div class="pfc-priority-item__body"><strong><?php echo esc_html( $priority['title'] ); ?></strong><small><?php echo esc_html( $priority_excerpt ); ?></small>
+                                <?php if ( strlen( $priority_message ) > strlen( $priority_excerpt ) ): ?><details class="pfc-evidence"><summary>View full diagnostic evidence</summary><div><p><?php echo esc_html( $priority_message ); ?></p></div></details><?php endif; ?>
+                            </div>
                             <span class="pfc-priority-item__impact"><?php echo esc_html( $priority['impact'] ?: $priority['area'] ); ?></span>
                         </div>
                     <?php endforeach; ?>
@@ -667,8 +673,9 @@ final class PFC_Admin {
             </div>
             <div class="pfc-box">
                 <h3>Latest scan snapshot</h3>
+                <p class="description">System checks from the latest completed scan. Incident history may be newer when it comes from logs or profiling.</p>
                 <?php if ( ! $scan ): ?>
-                    <div class="pfc-empty">No completed scan is cached yet.</div>
+                    <div class="pfc-empty">No completed system scan is cached yet. Run a Production-Safe Scan to populate this snapshot.</div>
                 <?php else: ?>
                     <p><small><?php echo esc_html( strtoupper( (string) ( $scan['mode'] ?? 'scan' ) ) ); ?> · <?php echo esc_html( (string) ( $scan['generated_at'] ?? '' ) ); ?> UTC</small></p>
                     <div class="pfc-snapshot">
@@ -703,9 +710,10 @@ final class PFC_Admin {
         <?php if(!empty($repair_result['indexes'])): ?><details><summary>Index inventory</summary><div><table class="widefat striped"><thead><tr><th>Index</th><th>Type</th><th>Unique</th><th>Columns</th></tr></thead><tbody><?php foreach($repair_result['indexes'] as $idx): ?><tr><td><code><?php echo esc_html($idx['name']); ?></code></td><td><?php echo esc_html($idx['type']); ?></td><td><?php echo !empty($idx['unique'])?'yes':'no'; ?></td><td><?php echo esc_html(implode(', ',(array)$idx['columns'])); ?></td></tr><?php endforeach; ?></tbody></table></div></details><?php endif; ?>
         </div><?php endif; ?>
 
-        <div class="pfc-actions">
+        <?php if ( isset( $_GET['scanned'] ) ): ?><div class="notice notice-success inline" role="status"><p>Deep database scan completed. Review the refreshed repair plan and backup requirements.</p></div><?php endif; ?>
+        <div class="pfc-actions pfc-database-actions">
         <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_scan"><input type="hidden" name="deep" value="1"><?php wp_nonce_field('pfc_scan'); ?><button class="button button-primary"><span class="dashicons dashicons-database" aria-hidden="true"></span>Run Deep Database Scan</button></form>
-        <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_expired_transients"><?php wp_nonce_field('pfc_transients'); ?><label><input type="checkbox" required name="confirm_expired_cleanup" value="1"> Confirm deletion of up to 1,000 already-expired transients (not reversible).</label> <button class="button"><span class="dashicons dashicons-trash" aria-hidden="true"></span>Delete 1,000 Expired Transients</button></form>
+        <form class="pfc-danger-action" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_expired_transients"><?php wp_nonce_field('pfc_transients'); ?><label><input type="checkbox" required name="confirm_expired_cleanup" value="1"> <span><strong>Confirm expired-transient cleanup</strong><br>Delete up to 1,000 already-expired transients. This cannot be undone.</span></label> <button class="button pfc-button-danger"><span class="dashicons dashicons-trash" aria-hidden="true"></span>Delete Expired Transients</button></form>
         </div>
         <h2 id="database-backups">Database Backups</h2>
         <div class="pfc-box">
@@ -718,18 +726,19 @@ final class PFC_Admin {
         <div id="pfc-backup-progress" class="notice notice-info inline" hidden><p>Backup progress will appear here.</p></div>
         <?php if ( ! empty( $backup_storage['ok'] ) ): ?><p><small><strong>Private storage:</strong> <code><?php echo esc_html( $backup_storage['path'] ); ?></code><?php echo ! empty( $backup_storage['inside_webroot'] ) ? ' (inside the web root with deny rules; verify your web server honors them)' : ' (outside the detected web root)'; ?>.</small></p><?php else: ?><p class="pfc-critical"><?php echo esc_html( $backup_storage['message'] ?? 'No backup storage directory is available.' ); ?></p><?php endif; ?>
         <?php if ( ! $backups ): ?><p>No Performance Console database backups have been created yet.</p><?php else: ?>
-        <table class="widefat striped"><thead><tr><th>Backup</th><th>Status</th><th>Progress</th><th>Size / checksum</th><th>Actions</th></tr></thead><tbody>
-        <?php foreach ( $backups as $backup ): $bid=(int)$backup['id']; $bstatus=(string)$backup['status']; ?>
+        <table class="widefat striped"><thead><tr><th>Backup</th><th>Status and repair eligibility</th><th>Progress</th><th>Size / checksum</th><th>Actions</th></tr></thead><tbody>
+        <?php foreach ( $backups as $backup ): $bid=(int)$backup['id']; $bstatus=(string)$backup['status']; $backup_eligible=PFC_Database_Backup::is_verified_recent($bid,PFC_Database_Backup::VERIFIED_MAX_AGE,false); ?>
         <tr><td><strong>#<?php echo $bid; ?></strong> <code><?php echo esc_html($backup['filename']); ?></code><br><small><?php echo esc_html($backup['created_at']); ?> UTC · <?php echo esc_html($backup['scope']); ?></small></td>
-        <td><?php if('verified'===$bstatus): ?><span class="pfc-good"><strong>Integrity checked</strong><br><small>Restore not tested</small></span><?php elseif('failed'===$bstatus): ?><span class="pfc-critical"><strong>Failed</strong></span><?php else: ?><strong><?php echo esc_html(ucwords(str_replace('_',' ',$bstatus))); ?></strong><?php endif; ?><?php if(!empty($backup['verified_at'])): ?><br><small><?php echo esc_html($backup['verified_at']); ?> UTC</small><?php endif; ?></td>
+        <td><?php if('verified'===$bstatus): ?><span class="pfc-good"><strong>Integrity checked</strong><br><small>Restore not tested</small></span><?php elseif('failed'===$bstatus): ?><span class="pfc-critical"><strong>Failed</strong></span><?php else: ?><strong><?php echo esc_html(ucwords(str_replace('_',' ',$bstatus))); ?></strong><?php endif; ?><?php if(!empty($backup['verified_at'])): ?><br><small>Verified <?php echo esc_html($backup['verified_at']); ?> UTC</small><?php endif; ?>
+        <?php if($backup_eligible): ?><span class="pfc-backup-eligibility is-eligible"><strong>Eligible for repairs now.</strong><br>Inside the 24-hour verification window; the file is rehashed before use.</span><?php elseif('verified'===$bstatus): ?><span class="pfc-backup-eligibility is-expired"><strong>Not currently eligible for repairs.</strong><br>The 24-hour eligibility window expired or the file no longer matches its verified state. Verify or create a fresh backup.</span><?php else: ?><span class="pfc-backup-eligibility is-expired">Not eligible for repairs until integrity verification completes.</span><?php endif; ?></td>
         <td><?php echo intval($backup['tables_done']); ?>/<?php echo intval($backup['table_count']); ?> tables<br><small><?php echo esc_html(number_format_i18n((int)$backup['row_count'])); ?> rows<?php if($backup['current_table']): ?> · <code><?php echo esc_html($backup['current_table']); ?></code><?php endif; ?></small></td>
         <td><?php echo esc_html(size_format((int)$backup['size_bytes'])); ?><?php if($backup['sha256']): ?><br><small>SHA-256 <code><?php echo esc_html(substr($backup['sha256'],0,16)); ?>…</code></small><?php endif; ?><?php if($backup['error_text']): ?><br><span class="pfc-critical"><?php echo esc_html($backup['error_text']); ?></span><?php endif; ?></td>
-        <td class="pfc-form-row"><?php if('running'===$bstatus): ?><button type="button" class="button" data-pfc-resume-backup="<?php echo $bid; ?>">Resume</button><?php elseif('ready_verify'===$bstatus): ?><button type="button" class="button button-primary" data-pfc-verify-backup="<?php echo $bid; ?>">Verify Backup</button><?php endif; ?>
-        <?php if(in_array($bstatus,array('verified','ready_verify'),true)): $download=wp_nonce_url(admin_url('admin-post.php?action=pfc_backup_download&backup_id='.$bid),'pfc_backup_download_'.$bid); ?><a class="button" href="<?php echo esc_url($download); ?>">Download</a><?php endif; ?>
-        <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post" onsubmit="return confirm('Delete this database backup file?');"><input type="hidden" name="action" value="pfc_backup_delete"><input type="hidden" name="backup_id" value="<?php echo $bid; ?>"><?php wp_nonce_field('pfc_backup_delete_'.$bid); ?><button class="button">Delete</button></form></td></tr>
+        <td class="pfc-form-row"><?php if('running'===$bstatus): ?><button type="button" class="button" data-pfc-resume-backup="<?php echo $bid; ?>" aria-label="Resume database backup #<?php echo $bid; ?>">Resume</button><?php elseif('ready_verify'===$bstatus): ?><button type="button" class="button button-primary" data-pfc-verify-backup="<?php echo $bid; ?>" aria-label="Verify database backup #<?php echo $bid; ?>">Verify Backup</button><?php endif; ?>
+        <?php if(in_array($bstatus,array('verified','ready_verify'),true)): $download=wp_nonce_url(admin_url('admin-post.php?action=pfc_backup_download&backup_id='.$bid),'pfc_backup_download_'.$bid); ?><a class="button" href="<?php echo esc_url($download); ?>" aria-label="Download database backup #<?php echo $bid; ?>">Download</a><?php endif; ?>
+        <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post" onsubmit="return confirm('Delete this database backup file?');"><input type="hidden" name="action" value="pfc_backup_delete"><input type="hidden" name="backup_id" value="<?php echo $bid; ?>"><?php wp_nonce_field('pfc_backup_delete_'.$bid); ?><button class="button" aria-label="Delete database backup #<?php echo $bid; ?>, <?php echo esc_attr($backup['filename']); ?>">Delete</button></form></td></tr>
         <?php endforeach; ?></tbody></table>
         <?php endif; ?>
-        <?php if($verified_backups): ?><p class="pfc-good"><strong><?php echo intval(count($verified_backups)); ?> recent integrity-checked Performance Console export(s)</strong> are candidates for repairs for 24 hours. The selected file is rehashed before use. This does not prove restoreability or a transactionally consistent snapshot.</p><?php else: ?><p class="pfc-warning"><strong>No recent integrity-checked Performance Console export is available.</strong> Create and verify one above before running a database-changing repair, or explicitly confirm an external backup/snapshot in the repair form.</p><?php endif; ?>
+        <?php if($verified_backups): ?><p class="pfc-good"><strong><?php echo intval(count($verified_backups)); ?> recent integrity-checked Performance Console export(s)</strong> are candidates for repairs for 24 hours. The selected file is rehashed before use. This does not prove restoreability or a transactionally consistent snapshot.</p><?php else: ?><p class="pfc-warning"><strong>No recent integrity-checked Performance Console export is available.</strong> Create and verify one above before running a database-changing repair, or explicitly confirm an external backup/snapshot in the repair form. Older integrity-checked rows remain visible above for reference, but are not eligible.</p><?php endif; ?>
         </div>
 
         <h2 id="innodb-transaction-manager">InnoDB Transaction Manager</h2>
@@ -829,7 +838,8 @@ final class PFC_Admin {
 
         <?php if ( 'profiling' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="profiling" id="pfc-view-profiling">
-        <div class="pfc-view-heading"><h2>Request profiling</h2><p>Capture a real WordPress save or measure public routes, then isolate plugin, database, hook and outbound HTTP cost.</p></div>
+        <div class="pfc-view-heading"><h2>Request profiling</h2><p>Measure one real editor save or a public page, then compare PHP, database, plugin, hook, and outbound-request time. Results are diagnostic samples, not production-wide averages.</p></div>
+        <nav class="pfc-local-nav" aria-label="Profiling sections"><a href="#save-profiling">Slow Save</a><a href="#deep-route-profiler">Deep Route</a><a href="#plugin-impact-test">Plugin Impact</a><a href="#recent-request-samples">Recent Samples</a><a href="#captured-queries">Queries</a></nav>
         <h2 id="save-profiling">Slow Save Profiler</h2>
         <?php if ( $save_capture_notice ): ?><div class="notice <?php echo ! empty( $save_capture_notice['ok'] ) ? 'notice-success' : 'notice-error'; ?> inline" role="status"><p><?php echo esc_html( $save_capture_notice['message'] ?? '' ); ?></p></div><?php endif; ?>
         <div class="pfc-box pfc-save-capture<?php echo $save_capture_status ? ' is-armed' : ''; ?>">
@@ -914,18 +924,18 @@ final class PFC_Admin {
         </div>
         <?php endif; ?>
 
-        <h2>Deep Route Profiler</h2>
+        <h2 id="deep-route-profiler">Deep Route Profiler</h2>
         <div class="pfc-box"><form class="pfc-form-row" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post"><input type="hidden" name="action" value="pfc_profile"><?php wp_nonce_field('pfc_profile'); ?>
         <?php $profile_url = isset( $_GET['profile_url'] ) && PFC_Utils::same_origin_url( wp_unslash( $_GET['profile_url'] ) ) ? esc_url_raw( wp_unslash( $_GET['profile_url'] ) ) : home_url('/'); ?>
         <label>Public WordPress URL<input type="url" name="profile_url" required value="<?php echo esc_attr( $profile_url ); ?>"></label><label>Measured runs<select name="runs"><option>3</option><option selected>5</option></select></label><button class="button button-primary">Profile this route</button></form>
-        <p class="description">Runs a private no-cache request without following redirects. Performance Console verifies that WordPress handled the response before accepting the measurement.</p>
+        <p class="description">Measures the selected public page without using its cached response. Only requests verified by WordPress are included; redirects are not followed.</p>
         <?php if ( $profile ): $pm=$profile['probe_meta']??array(); ?><p><strong>Last profile:</strong> <?php echo esc_html($profile['url']); ?> &mdash; <?php if($profile['times']): ?>server PHP <?php echo esc_html(implode(', ', $profile['times'])); ?> ms; median <?php echo esc_html(PFC_Utils::median($profile['times'])); ?> ms<?php else: ?><span class="pfc-critical">No verified diagnostic request reached WordPress or matched its saved server measurement. Check the MU profiler and page-cache bypass.</span><?php endif; ?><?php if($pm): ?> <small>(verified <?php echo intval($pm['verified']??0); ?>/<?php echo intval($pm['requested']??0); ?>)</small><?php endif; ?></p><?php endif; ?>
         </div>
 
-        <h2>Private Plugin Impact Test</h2>
+        <h2 id="plugin-impact-test">Private Plugin Impact Test</h2>
         <div class="pfc-box"><form class="pfc-form-row" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post"><input type="hidden" name="action" value="pfc_plugin_impact"><?php wp_nonce_field('pfc_plugin_impact'); ?>
         <label>Route<input type="url" name="profile_url" required value="<?php echo esc_attr(home_url('/')); ?>"></label><label>Plugin<select name="plugin" required><option value="">Select plugin</option><?php foreach($active_plugins as $p): if($p['file']===PFC_BASENAME)continue; ?><option value="<?php echo esc_attr($p['file']); ?>"><?php echo esc_html($p['name'].' '.$p['version']); ?></option><?php endforeach; ?></select></label><label><?php esc_html_e( 'Expected page text (optional)', 'performance-console' ); ?><input type="text" name="required_text" maxlength="200"></label><button class="button">Benchmark Plugin</button></form>
-        <p class="description">Runs warm-ups followed by five alternating A/B pairs. Each result is matched to its saved server-side PHP measurement and verified exclusion. The plugin remains active for visitors. Enter a distinctive visible phrase to require it in every response. This checks content presence, not forms, checkout or JavaScript behavior; test those separately on staging. Results apply only to this anonymous route.</p>
+        <p class="description">Compares five alternating A/B pairs on one anonymous route; visitors keep the plugin active. Expected page text helps catch broken responses, but forms, checkout, and JavaScript still need separate staging tests.</p>
         <?php if($impact): $bm=$impact['baseline_meta']??array(); $wm=$impact['without_meta']??array(); ?><p><strong><?php echo esc_html($impact['plugin']); ?>:</strong> <?php if($impact['baseline']&&$impact['without']&&!empty($impact['comparable'])&&count((array)($impact['pair_deltas']??array()))>=5): ?>baseline PHP <?php echo esc_html(round((float)$impact['baseline_median'],1)); ?> ms; without plugin <?php echo esc_html(round((float)$impact['without_median'],1)); ?> ms; <?php if(!empty($impact['repeatable'])): ?>paired impact <strong><?php echo esc_html(($impact['delta']>=0?'+':'').$impact['delta']); ?> ms</strong> · <?php echo esc_html($impact['confidence']); ?> confidence.<?php else: ?><strong>No repeatable plugin cost detected.</strong> The paired median <?php echo esc_html(($impact['delta']>=0?'+':'').$impact['delta']); ?> ms is within the ±<?php echo esc_html($impact['noise_floor']); ?> ms noise floor.<?php endif; ?><?php elseif(empty($impact['comparable'])): ?><span class="pfc-critical">The responses changed too much to compare safely. Check for missing templates, redirects or plugin dependencies.</span><?php else: ?><span class="pfc-critical">The benchmark did not produce five verified server-side pairs. Check the MU profiler and page-cache bypass, then run it again.</span><?php endif; ?> <small>(server verified: baseline <?php echo intval($bm['verified']??0); ?>/<?php echo intval($bm['requested']??0); ?>; exclusion <?php echo intval($wm['verified']??0); ?>/<?php echo intval($wm['requested']??0); ?>)</small></p><?php if(!empty($impact['pair_deltas'])): ?><p class="description">Pair deltas: <?php echo esc_html(implode(', ',array_map(static function($value){return ($value>=0?'+':'').round($value,1);},(array)$impact['pair_deltas']))); ?> ms. Variability (MAD): <?php echo esc_html($impact['mad']); ?> ms. Positive values mean the plugin added PHP time.</p><?php endif; ?><?php endif; ?>
         </div>
         </section>
@@ -933,7 +943,7 @@ final class PFC_Admin {
 
         <?php if ( 'findings' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="findings" id="pfc-view-findings">
-        <div class="pfc-view-heading"><h2>Performance incidents</h2><p>Repeated evidence is grouped into root-cause incidents. Diagnose the representative route, apply a guarded change, then recheck the same incident.</p></div>
+        <div class="pfc-view-heading"><h2>Performance incidents</h2><p>Review four incidents at a time. Start with the recommended diagnostic, then recheck the same evidence after a guarded change.</p></div>
         <?php if ( $incident_notice ): ?><div class="notice notice-success inline" role="status"><p><?php echo esc_html( $incident_notice ); ?></p></div><?php endif; ?>
         <form class="pfc-incident-toolbar" method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>">
             <input type="hidden" name="page" value="pfc"><input type="hidden" name="view" value="findings">
@@ -941,17 +951,20 @@ final class PFC_Admin {
             <label for="pfc-incident-severity">Severity<select id="pfc-incident-severity" data-pfc-filter="severity"><option value="">All severities</option><option value="critical">Critical</option><option value="high">High</option><option value="warning">Warning</option><option value="info">Info</option></select></label>
             <label for="pfc-incident-search" class="pfc-incident-search">Search incidents<input id="pfc-incident-search" type="search" data-pfc-filter="search" placeholder="Component, route, or evidence"></label>
         </form>
-        <p class="pfc-findings-note" aria-live="polite"><span data-pfc-result-count><?php echo esc_html( number_format_i18n( count( $issues ) ) ); ?></span> grouped incident(s) in this view.</p>
+        <p class="pfc-findings-note" aria-live="polite"><span data-pfc-result-count><?php echo esc_html( number_format_i18n( count( $issues ) ) ); ?></span> grouped incident(s) match this view.</p>
         <?php if ( ! $issues ): ?><div class="pfc-empty"><strong>No incidents match this lifecycle view.</strong><br>Run a production-safe scan or switch to another status.</div><?php endif; ?>
+        <div class="pfc-empty pfc-no-results" data-pfc-no-results hidden><strong>No incidents match these filters.</strong><br>Clear the search or choose another severity.</div>
         <div class="pfc-incidents">
-        <?php foreach ( $issues as $incident ): $routes=(array)($incident['routes']??array()); $representative=''; foreach($routes as $candidate){if(filter_var($candidate,FILTER_VALIDATE_URL)&&PFC_Utils::same_origin_url($candidate)){$representative=$candidate;break;}} ?>
+        <?php foreach ( $issues as $incident ): $routes=(array)($incident['routes']??array()); $representative=''; foreach($routes as $candidate){if(filter_var($candidate,FILTER_VALIDATE_URL)&&PFC_Utils::same_origin_url($candidate)){$representative=$candidate;break;}} $incident_message=wp_strip_all_tags((string)$incident['message']); $incident_excerpt=PFC_Utils::truncate($incident_message,0,220); ?>
             <article class="pfc-incident" data-severity="<?php echo esc_attr( $incident['severity'] ); ?>" data-search="<?php echo esc_attr( strtolower( wp_strip_all_tags( implode( ' ', array( $incident['title'], $incident['message'], $incident['area'], $incident['component'], implode( ' ', $routes ) ) ) ) ) ); ?>">
                 <header class="pfc-incident__header">
                     <div><span class="pfc-status pfc-status--<?php echo esc_attr( $incident['severity'] ); ?>"><?php echo esc_html( strtoupper( $incident['severity'] ) ); ?></span> <span class="pfc-incident__area"><?php echo esc_html( $incident['area'] ); ?><?php echo !empty($incident['component'])?' · '.esc_html($incident['component']):''; ?></span></div>
-                    <span class="pfc-incident__confidence"><?php echo esc_html( round( (float) $incident['confidence'] ) ); ?>/100 rule-based evidence score</span>
+                    <span class="pfc-incident__confidence">Evidence score <?php echo esc_html( round( (float) $incident['confidence'] ) ); ?>/100</span>
                 </header>
                 <div class="pfc-incident__body">
-                    <div class="pfc-incident__summary"><h3><?php echo esc_html( $incident['title'] ); ?></h3><p><?php echo wp_kses_post( $incident['message'] ); ?></p><p class="pfc-incident__recommendation"><strong>Recommended next step:</strong> <?php echo wp_kses_post( $incident['recommendation'] ); ?></p></div>
+                    <div class="pfc-incident__summary"><h3><?php echo esc_html( $incident['title'] ); ?></h3><p><?php echo esc_html( $incident_excerpt ); ?></p>
+                        <?php if ( strlen( $incident_message ) > strlen( $incident_excerpt ) ): ?><details class="pfc-evidence"><summary>View full diagnostic evidence</summary><div><p><?php echo esc_html( $incident_message ); ?></p></div></details><?php endif; ?>
+                        <p class="pfc-incident__recommendation"><strong>Recommended next step:</strong> <?php echo wp_kses_post( $incident['recommendation'] ); ?></p></div>
                     <dl class="pfc-incident__facts"><div><dt>Impact</dt><dd><?php echo esc_html( $incident['impact'] ?: 'Needs measurement' ); ?></dd></div><div><dt>Evidence</dt><dd><?php echo esc_html( number_format_i18n( (int) $incident['occurrences'] ) ); ?> occurrence(s) across <?php echo esc_html( number_format_i18n( count( $routes ) ) ); ?> route(s)</dd></div><div><dt>Last confirmed</dt><dd><?php echo esc_html( $incident['last_seen'] ); ?> UTC</dd></div></dl>
                 </div>
                 <?php if ( 'frontend' === $incident['area'] && false !== strpos( (string) $incident['title'], 'local HTTP probe' ) ): ?>
@@ -959,21 +972,37 @@ final class PFC_Admin {
                 <?php endif; ?>
                 <?php if ( $routes ): ?><details class="pfc-incident__routes"><summary>View affected routes and evidence <span class="pfc-incident__route-count"><?php echo esc_html( number_format_i18n( count( $routes ) ) ); ?> route(s)</span></summary><div class="pfc-incident__route-content"><ul><?php foreach ( array_slice( $routes, 0, 25 ) as $route ): ?><li><code><?php echo esc_html( $route ); ?></code></li><?php endforeach; ?></ul><?php if(count($routes)>25): ?><p><?php echo esc_html( number_format_i18n( count($routes)-25 ) ); ?> additional route(s) are grouped into this incident.</p><?php endif; ?></div></details><?php endif; ?>
                 <footer class="pfc-incident__actions">
-                    <?php if ( 'save' === $incident['area'] ): ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=profiling#save-profiling') ); ?>">Capture another save</a><?php elseif ( $representative ): ?><a class="button button-primary" href="<?php echo esc_url( add_query_arg( array( 'page'=>'pfc','view'=>'profiling','profile_url'=>$representative ), admin_url('admin.php') ) . '#profiling' ); ?>">Profile representative route</a><?php elseif ( 'database' === $incident['area'] ): ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=database#database') ); ?>">Open database diagnostics</a><?php else: ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=profiling#profiling') ); ?>">Open profiling tools</a><?php endif; ?>
-                    <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_incident_action"><input type="hidden" name="incident_key" value="<?php echo esc_attr( $incident['incident_key'] ); ?>"><?php wp_nonce_field( 'pfc_incident_' . $incident['incident_key'] ); ?><button class="button" name="incident_action" value="verify"><?php echo count( $routes ) > 1 ? 'Recheck one route' : 'Recheck now'; ?></button><button class="button" name="incident_action" value="snooze">Snooze 7 days</button><button class="button" name="incident_action" value="resolve">Mark resolved</button><button class="button-link" name="incident_action" value="accept">Accept risk</button></form>
+                    <div class="pfc-incident__primary-actions">
+                        <?php if ( 'save' === $incident['area'] ): ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=profiling#save-profiling') ); ?>">Capture another save</a><?php elseif ( $representative ): ?><a class="button button-primary" href="<?php echo esc_url( add_query_arg( array( 'page'=>'pfc','view'=>'profiling','profile_url'=>$representative ), admin_url('admin.php') ) . '#profiling' ); ?>">Profile representative route</a><?php elseif ( 'database' === $incident['area'] ): ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=database#database') ); ?>">Open database diagnostics</a><?php else: ?><a class="button button-primary" href="<?php echo esc_url( admin_url('admin.php?page=pfc&view=profiling#profiling') ); ?>">Open profiling tools</a><?php endif; ?>
+                        <form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_incident_action"><input type="hidden" name="incident_key" value="<?php echo esc_attr( $incident['incident_key'] ); ?>"><?php wp_nonce_field( 'pfc_incident_' . $incident['incident_key'] ); ?><button class="button" name="incident_action" value="verify"><?php echo count( $routes ) > 1 ? 'Recheck one route' : 'Recheck now'; ?></button></form>
+                    </div>
+                    <details class="pfc-incident__manage"><summary>Manage incident<span class="screen-reader-text">: <?php echo esc_html( $incident['title'] ); ?></span></summary><div><form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_incident_action"><input type="hidden" name="incident_key" value="<?php echo esc_attr( $incident['incident_key'] ); ?>"><?php wp_nonce_field( 'pfc_incident_' . $incident['incident_key'] ); ?><button class="button" name="incident_action" value="snooze">Snooze 7 days</button><button class="button" name="incident_action" value="resolve">Mark resolved</button><button class="button-link" name="incident_action" value="accept">Accept risk</button></form></div></details>
                 </footer>
             </article>
         <?php endforeach; ?>
         </div>
+        <nav class="pfc-incident-pagination" data-pfc-pagination hidden aria-label="Incident pages"><button type="button" class="button" data-pfc-page="previous">Previous</button><span data-pfc-page-status aria-live="polite"></span><button type="button" class="button" data-pfc-page="next">Next</button></nav>
         </section>
         <?php endif; ?>
 
         <?php if ( 'cache' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="cache" id="pfc-view-cache">
             <div class="pfc-view-heading"><h2>Cache & Redis diagnostics</h2><p>Measure WordPress cache and Redis timing, and inspect Object Cache Pro using supported, opt-in interfaces. No cache flush, ACL modification or drop-in replacement is performed.</p></div>
-            <div class="pfc-box" id="pfc-cache-bootstrap-status"><h3>MU Diagnostic Bootstrap Status</h3>
-                <p>Installed: <strong><?php echo ! empty( $bootstrap_status['installed'] ) ? 'Yes' : 'No'; ?></strong> · Installed version: <strong><?php echo esc_html( (string) ( $bootstrap_status['version'] ?: 'Unknown' ) ); ?></strong> · Required version: <strong><?php echo esc_html( PFC_Bootstrap::VERSION ); ?></strong> · Status: <strong><?php echo ! empty( $bootstrap_status['current'] ) ? 'Current' : 'Missing or outdated'; ?></strong></p>
+            <div class="pfc-box" id="pfc-cache-bootstrap-status"><h3>Diagnostic bootstrap</h3>
+                <p class="description">The MU bootstrap verifies signed measurements. Repair it before profiling if the installed version is missing or outdated.</p>
+                <dl class="pfc-cache-status"><div><dt>Installed</dt><dd><?php echo ! empty( $bootstrap_status['installed'] ) ? 'Yes' : 'No'; ?></dd></div><div><dt>Installed version</dt><dd><?php echo esc_html( (string) ( $bootstrap_status['version'] ?: 'Unknown' ) ); ?></dd></div><div><dt>Required version</dt><dd><?php echo esc_html( PFC_Bootstrap::VERSION ); ?></dd></div><div><dt>Status</dt><dd class="<?php echo ! empty( $bootstrap_status['current'] ) ? 'pfc-good' : 'pfc-warning'; ?>"><?php echo ! empty( $bootstrap_status['current'] ) ? 'Current' : 'Needs repair'; ?></dd></div></dl>
                 <?php if ( empty( $bootstrap_status['current'] ) ): ?><form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"><input type="hidden" name="action" value="pfc_bootstrap"><?php wp_nonce_field( 'pfc_bootstrap' ); ?><button class="button">Repair diagnostic bootstrap</button></form><?php endif; ?>
+            </div>
+            <div class="pfc-box" id="cache-diagnostics">
+                <h3>Basic cache diagnostics</h3><p>Measure WordPress cache and direct Redis operations, inspect autoloaded options, and run supported Object Cache Pro health checks.</p>
+                <form class="pfc-cache-diagnostics-form" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
+                    <input type="hidden" name="action" value="pfc_cache_diagnose">
+                    <?php wp_nonce_field( 'pfc_cache_diagnose' ); ?>
+                    <button type="submit" class="button button-primary">Run Basic Cache Diagnostics</button>
+                    <label class="pfc-opt-confirm"><input type="checkbox" name="ocp_groups" value="1"> <span><strong>Include cache-group inventory</strong><br>Optional Object Cache Pro inventory; may inspect many groups.</span></label>
+                    <label class="pfc-opt-confirm"><input type="checkbox" name="ocp_group_memory" value="1"> <span><strong>Include group memory estimates</strong><br>Extra workload. Use off-peak or on staging; requires group inventory.</span></label>
+                </form>
+                <p class="description">Basic tests are read-only apart from short-lived synthetic probes. Optional inventory uses Object Cache Pro’s GET endpoint, never a custom Redis key scan. No credentials, cache values, ACL changes, flushes, or drop-in replacements are involved.</p>
             </div>
             <?php if ( $cache_diagnostic || $cache_profile ): ?>
             <div class="pfc-box" id="cache-export">
@@ -989,6 +1018,7 @@ final class PFC_Admin {
             </div>
             <?php endif; ?>
 
+            <?php ob_start(); ?>
             <div class="pfc-box" id="cache-request-profile">
                 <h3>Real-request cache workload</h3>
                 <p>Profile the actual WordPress work for a public page, not just a synthetic Redis key. Each test uses a signed, cache-bypassing request and verifies its saved server-side measurement before including it.</p>
@@ -1329,7 +1359,7 @@ final class PFC_Admin {
                     <p class="description">These are WordPress cache hit/miss counter changes within specific callback scopes. They are not individual Redis GET calls or exclusive cache-processing time. Nested callback scopes may overlap.</p>
                 </details>
                 <?php if ( ! $ocp ): ?>
-                    <p class="description">Run Redis, Autoload &amp; Object Cache Pro Diagnostics below to populate this panel. Flush attempts will be collected only after the new plugin version is active and Object Cache Pro is detected.</p>
+                    <p class="description">Run Basic Cache Diagnostics above to populate this panel. Flush attempts are collected only when the current plugin version is active and Object Cache Pro is detected.</p>
                 <?php else: ?>
                     <?php $od=(array)($ocp['detection']??array()); $health=(array)($ocp['health_checks']??array()); $tracking=(array)($ocp['key_tracking_diagnostics']??array()); $acl=(array)($ocp['acl_diagnostics']??array()); $groups=(array)($ocp['cache_group_metrics']??array()); $serial=(array)($ocp['serialization_benchmarks']??array()); ?>
                     <section class="pfc-native-tracking" id="pfc-ocp-native-tracking" aria-label="Native Object Cache Pro Key Tracking diagnosis">
@@ -1438,16 +1468,7 @@ final class PFC_Admin {
                     </details>
                 <?php endif; ?>
             </div>
-            <div class="pfc-box" id="cache-diagnostics">
-                <form action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" method="post">
-                    <input type="hidden" name="action" value="pfc_cache_diagnose">
-                    <?php wp_nonce_field( 'pfc_cache_diagnose' ); ?>
-                    <button type="submit" class="button button-primary">Run Redis, Autoload &amp; Object Cache Pro Diagnostics</button>
-                    <label style="display:block;margin-top:10px"><input type="checkbox" name="ocp_groups" value="1"> Read Object Cache Pro cache-group inventory (can scan many keys)</label>
-                    <label style="display:block;margin-top:6px"><input type="checkbox" name="ocp_group_memory" value="1"> Include group memory estimates (extra workload, off-peak/staging only; requires group inventory)</label>
-                </form>
-                <p class="description">Includes the existing short-lived Redis probes and autoload scan, plus read-only Object Cache Pro Site Health/ACL capability checks and an isolated synthetic serialization benchmark. Optional group inventory uses Object Cache Pro's GET endpoint, never a custom Redis key scan. Group memory enumeration may be costly and is never automatic. No credentials, cache keys or values are displayed.</p>
-            </div>
+            <?php $cache_advanced_diagnostics = ob_get_clean(); ?>
             <?php if ( ! $cache_diagnostic ): ?>
                 <div class="pfc-empty">No recent diagnostic report. Run the test above to identify whether Redis itself or WordPress object-cache processing is slower.</div>
             <?php else:
@@ -1486,6 +1507,7 @@ final class PFC_Admin {
                 </div>
                 <div class="pfc-box"><h3>Recommended next checks</h3><ul><?php foreach ( (array) ( $d['recommendations'] ?? array() ) as $advice ): ?><li><?php echo esc_html( (string) $advice ); ?></li><?php endforeach; ?></ul><p><a href="<?php echo esc_url( admin_url( 'admin.php?page=pfc&view=profiling#profiling' ) ); ?>">Profile a representative uncached page request</a> to examine the remaining 80–100 ms request budget.</p></div>
             <?php endif; ?>
+            <details class="pfc-advanced-diagnostics" id="advanced-cache-diagnostics"><summary>Advanced request, callback, HTTP, and Object Cache Pro tools</summary><div><p class="description">Open these tools for a controlled deep diagnosis. Signed profiling adds overhead and should be compared with an uninstrumented request.</p><?php echo $cache_advanced_diagnostics; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Captured from the escaped admin templates above. ?></div></details>
         </section>
         <?php endif; ?>
 
@@ -1497,17 +1519,18 @@ final class PFC_Admin {
         <p class="description">Exports a redacted summary of the cached scan, not raw queries, plugin settings or database contents.</p>
         <?php endif; ?>
 
-        <?php if($scan): self::render_scan_details($scan); else: ?><div class="pfc-empty">Run a Production-Safe Scan to populate the full system view.</div><?php endif; ?>
+        <?php if($scan): self::render_scan_details($scan); else: ?><div class="pfc-empty"><strong>No completed system scan yet.</strong><p>Run a safe scan to inspect database, plugin, cache, job, frontend, and storage-engine health.</p><form action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" method="post"><input type="hidden" name="action" value="pfc_scan"><?php wp_nonce_field('pfc_scan'); ?><button class="button button-primary"><span class="dashicons dashicons-search" aria-hidden="true"></span>Run Production-Safe Scan</button></form></div><?php endif; ?>
         </section>
         <?php endif; ?>
 
         <?php if ( 'profiling' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="profiling">
-        <h2>Recent Request Samples</h2><table class="widefat striped"><thead><tr><th>ID</th><th>Time</th><th>Mode</th><th>Variant</th><th>Route</th><th>PHP</th><th>DB</th><th>Queries</th><th>HTTP</th><th>Memory</th><th>Phases / hooks</th></tr></thead><tbody>
+        <h2 id="recent-request-samples">Recent Request Samples</h2><table class="widefat striped"><thead><tr><th>ID</th><th>Time</th><th>Mode</th><th>Variant</th><th>Route</th><th>PHP</th><th>DB</th><th>Queries</th><th>HTTP</th><th>Memory</th><th>Phases / hooks</th></tr></thead><tbody>
+        <?php if(!$runs): ?><tr><td colspan="11">No request samples yet. Profile a public route or capture an editor save to begin.</td></tr><?php endif; ?>
         <?php foreach($runs as $r): $payload=json_decode($r->payload,true); ?><tr><td><?php echo (int)$r->id; ?></td><td><?php echo esc_html($r->created_at); ?></td><td><?php echo esc_html($r->mode); ?></td><td><?php echo esc_html('save'===$r->mode?'captured save':(!empty($r->excluded_plugin)?'without '.$r->excluded_plugin:'all plugins')); ?></td><td><code><?php echo esc_html($r->route); ?></code></td><td><?php echo esc_html($r->php_ms.' ms'); ?></td><td><?php echo esc_html($r->db_ms.' ms'); ?></td><td><?php echo (int)$r->query_count; ?></td><td><?php echo esc_html($r->http_ms.' ms / '.(int)$r->http_count); ?></td><td><?php echo esc_html(size_format((int)$r->memory_peak)); ?></td><td><small><?php echo esc_html(self::top_timings($payload)); ?></small></td></tr><?php endforeach; ?>
         </tbody></table>
 
-        <h2>Captured Slow / Repeated Queries</h2><table class="widefat striped"><thead><tr><th>Run</th><th>Component</th><th>Calls</th><th>Total / max</th><th>Query</th><th>EXPLAIN analysis</th></tr></thead><tbody>
+        <h2 id="captured-queries">Captured Slow / Repeated Queries</h2><table class="widefat striped"><thead><tr><th>Run</th><th>Component</th><th>Calls</th><th>Total / max</th><th>Query</th><th>EXPLAIN analysis</th></tr></thead><tbody>
         <?php if(!$queries): ?><tr><td colspan="6">Profile a route or capture a save to collect attributed query patterns.</td></tr><?php endif; ?>
         <?php foreach($queries as $q): $ex=json_decode($q->explain_json,true); $cand=$ex['analysis']['index_candidate']??array(); ?><tr><td>#<?php echo intval($q->run_id); ?><br><small><?php echo esc_html($q->created_at); ?></small></td><td><?php echo esc_html($q->component_type.':'.$q->component_slug); ?><br><small><?php echo esc_html($q->source_file); ?><?php echo $q->source_line?':'.intval($q->source_line):''; ?></small></td><td><?php echo intval($q->count); ?></td><td><?php echo esc_html($q->total_ms.' / '.$q->max_ms.' ms'); ?></td><td><code><?php echo esc_html(PFC_Utils::truncate($q->normalized_sql, 1000)); ?></code></td><td><small><?php echo esc_html(implode('; ',(array)($ex['analysis']['reasons']??array()))); ?></small><?php if(!empty($cand['sql'])): ?><br><strong>Review-only index candidate:</strong><br><code><?php echo esc_html($cand['sql']); ?></code><br><small><?php echo esc_html($cand['warning']??''); ?></small><?php endif; ?></td></tr><?php endforeach; ?>
         </tbody></table>
@@ -1516,10 +1539,11 @@ final class PFC_Admin {
 
         <?php if ( 'monitoring' === $active_view ): ?>
         <section class="pfc-view" data-pfc-view="monitoring" id="pfc-view-monitoring">
-        <div class="pfc-view-heading"><h2>Real-user monitoring</h2><p>Compare estimated p75 by route group. Only version 2 measurements are shown; legacy measurements are excluded. Each sampled visit reports once, at its first backgrounding, so later interactions are not included.</p></div>
+        <div class="pfc-view-heading"><h2>Real-user monitoring</h2><p>Compare estimated p75 by route group over the last 24 hours. Each sampled visit reports once when it is first backgrounded; later interactions and legacy measurements are excluded.</p></div>
+        <?php if ( isset( $_GET['settings'] ) ): ?><div class="notice notice-success inline" role="status"><p>Monitoring settings saved. New samples will use the updated rates and route list.</p></div><?php endif; ?>
         <h2>Real User Monitoring, Last 24 Hours</h2><div class="pfc-grid">
-        <div class="pfc-box"><table class="widefat striped pfc-responsive-table"><thead><tr><th>Metric</th><th>Route group</th><th>Samples</th><th>p75 bucket upper bound</th><th>Average</th><th>Worst observed</th></tr></thead><tbody><?php if(!$rum): ?><tr><td colspan="6">No browser metrics arrived in the last 24 hours. Confirm the sample rate, page-cache deployment and REST accessibility.</td></tr><?php endif; ?><?php foreach($rum as $m): $unit='cls'===$m['metric']?'':' ms'; ?><tr><td data-label="Metric"><?php echo esc_html(strtoupper($m['metric'])); ?></td><td data-label="Route group"><code><?php echo esc_html($m['route_group']?:'legacy/unknown'); ?></code></td><td data-label="Samples"><?php echo intval($m['samples']); ?><?php if((int)$m['samples']<30): ?><br><small>Low confidence</small><?php endif; ?></td><td data-label="p75"><strong><?php echo esc_html( PFC_Utils::metric_percentile( $m, .75 ) . $unit ); ?></strong></td><td data-label="Average"><?php echo esc_html(round((float)$m['average_value'],2).$unit); ?></td><td data-label="Worst observed"><?php echo esc_html(round((float)$m['value_max'],2).$unit); ?></td></tr><?php endforeach; ?></tbody></table></div>
-        <div class="pfc-box"><h3>Recent WordPress Changes</h3><?php if(!$changes): ?><p>No tracked updates/activation changes yet.</p><?php else: ?><ul><?php foreach(array_slice($changes,0,12) as $c): ?><li><strong><?php echo esc_html($c['change_type']); ?></strong> <?php echo esc_html($c['object_name']); ?> <small><?php echo esc_html($c['created_at']); ?></small><?php if(empty($c['reverted_at']) && in_array($c['change_type'],array('autoload','db_cleanup_orphans'),true)): ?> <form style="display:inline" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post"><input type="hidden" name="action" value="pfc_db_fix"><input type="hidden" name="repair_action" value="rollback_change"><input type="hidden" name="change_id" value="<?php echo intval($c['id']); ?>"><?php wp_nonce_field('pfc_db_fix'); ?><button class="button-link">Undo</button></form><?php elseif(!empty($c['reverted_at'])): ?> <small>(reverted <?php echo esc_html($c['reverted_at']); ?>)</small><?php endif; ?></li><?php endforeach; ?></ul><?php endif; ?><?php if(!empty($scan['regression']['regressions'])): ?><p><strong>Detected regressions:</strong> <?php echo intval(count($scan['regression']['regressions'])); ?></p><?php endif; ?></div>
+        <div class="pfc-box"><table class="widefat striped pfc-responsive-table"><thead><tr><th>Metric</th><th>Route group</th><th>Samples</th><th>p75 bucket upper bound</th><th>Average</th><th>Worst observed</th></tr></thead><tbody><?php if(!$rum): ?><tr><td colspan="6" data-label="Status">No browser metrics arrived in the last 24 hours. Confirm the sample rate, page-cache deployment and REST accessibility.</td></tr><?php endif; ?><?php foreach($rum as $m): $unit='cls'===$m['metric']?'':' ms'; ?><tr><td data-label="Metric"><?php echo esc_html(strtoupper($m['metric'])); ?></td><td data-label="Route group"><code><?php echo esc_html($m['route_group']?:'legacy/unknown'); ?></code></td><td data-label="Samples"><?php echo intval($m['samples']); ?><?php if((int)$m['samples']<30): ?><br><small>Low confidence</small><?php endif; ?></td><td data-label="p75"><strong><?php echo esc_html( PFC_Utils::metric_percentile( $m, .75 ) . $unit ); ?></strong></td><td data-label="Average"><?php echo esc_html(round((float)$m['average_value'],2).$unit); ?></td><td data-label="Worst observed"><?php echo esc_html(round((float)$m['value_max'],2).$unit); ?></td></tr><?php endforeach; ?></tbody></table></div>
+        <div class="pfc-box"><h3>Recent WordPress Changes</h3><?php if(!$changes): ?><p>No tracked updates/activation changes yet.</p><?php else: $change_groups=array(); foreach($changes as $c){$group_key=$c['change_type'].'|'.$c['object_name']; if(!isset($change_groups[$group_key])){$c['repeat_count']=1;$change_groups[$group_key]=$c;}else{$change_groups[$group_key]['repeat_count']++;}} ?><p class="description">Repeated entries for the same change and object are grouped. Undo remains attached to the latest eligible entry.</p><ul><?php foreach(array_slice($change_groups,0,8) as $c): $change_label=self::change_label($c['change_type']); ?><li><strong><?php echo esc_html($change_label); ?></strong> <?php echo esc_html($c['object_name']); ?> <small><?php echo esc_html($c['created_at']); ?><?php if($c['repeat_count']>1): ?> · <?php echo intval($c['repeat_count']); ?> entries<?php endif; ?></small><?php if(empty($c['reverted_at']) && in_array($c['change_type'],array('autoload','db_cleanup_orphans'),true)): ?> <form style="display:inline" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post"><input type="hidden" name="action" value="pfc_db_fix"><input type="hidden" name="repair_action" value="rollback_change"><input type="hidden" name="change_id" value="<?php echo intval($c['id']); ?>"><?php wp_nonce_field('pfc_db_fix'); ?><button class="button-link" aria-label="Undo <?php echo esc_attr($change_label.' '.$c['object_name']); ?>">Undo</button></form><?php elseif(!empty($c['reverted_at'])): ?> <small>(reverted <?php echo esc_html($c['reverted_at']); ?>)</small><?php endif; ?></li><?php endforeach; ?></ul><?php endif; ?><?php if(!empty($scan['regression']['regressions'])): ?><p><strong>Detected regressions:</strong> <?php echo intval(count($scan['regression']['regressions'])); ?></p><?php endif; ?></div>
         </div>
 
         <h2>Monitoring Settings</h2><div class="pfc-box"><form class="pfc-form-stack" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post"><input type="hidden" name="action" value="pfc_settings"><?php wp_nonce_field('pfc_settings'); ?>
@@ -1529,6 +1553,25 @@ final class PFC_Admin {
         </section>
         <?php endif; ?>
         </div><?php
+    }
+
+    private static function change_label( $type ) {
+        $labels = array(
+            'autoload' => 'Autoload disabled',
+            'autoload_bulk_off' => 'Autoload disabled',
+            'db_cleanup_orphans' => 'Orphaned database rows removed',
+            'index_created' => 'Database index created',
+            'runtime_levers' => 'Runtime settings changed',
+            'runtime_levers_undo' => 'Runtime settings restored',
+            'cron_dedupe' => 'Duplicate cron events removed',
+            'plugin_activated' => 'Plugin activated',
+            'plugin_deactivated' => 'Plugin deactivated',
+            'plugin_updated' => 'Plugin updated',
+            'theme_updated' => 'Theme updated',
+            'core_updated' => 'WordPress updated',
+        );
+        $type = (string) $type;
+        return $labels[ $type ] ?? ucwords( str_replace( array( '_', '-' ), ' ', $type ) );
     }
 
     private static function top_timings( $payload ) {

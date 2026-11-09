@@ -162,3 +162,140 @@
 .pfc-native-tracking details{margin:14px 0}
 .pfc-native-tracking .widefat{margin:12px 0 18px}
 @media(max-width:782px){.pfc-tracking-report-form textarea{max-width:100%}}
+
+/* 3.2.1: accessible, compact workflows across desktop and touch screens. */
+.cgm-pfc-root{--ink-faint:224 14% 38%;font-size:14px}
+.cgm-pfc-root ::selection{background:hsl(var(--accent)/.2);color:hsl(var(--ink))}
+.pfc-suite-subtitle{font-size:11.5px;color:hsl(var(--ink-soft))}
+.pfc-suite-version,.pfc-nav-count{font-size:11px}
+.pfc-suite-nav-wrap{position:relative;min-width:0}
+.pfc-suite-nav__overflow{position:absolute;z-index:2;right:0;top:0;bottom:1px;display:none;align-items:center;width:52px;padding-left:20px;pointer-events:none;background:linear-gradient(90deg,transparent,hsl(var(--paper)) 58%);color:hsl(var(--accent-ink))}
+.pfc-suite-nav-wrap.is-overflowing:not(.is-at-end) .pfc-suite-nav__overflow{display:flex}
+.pfc-suite-nav a{color:hsl(var(--ink-soft))}
+.pfc-view-heading p:last-child,.pfc-intro{max-width:75ch}
+.pfc-box,.pfc-grid>*,.pfc-overview-layout>*,.pfc-opt-panel{min-width:0}
+.pfc-findings-note,.cgm-pfc-root small{color:hsl(var(--ink-soft))}
+.cgm-pfc-root table.widefat thead th{font-size:11px;color:hsl(var(--ink-soft))!important}
+.cgm-pfc-root .pfc-status{font-size:11px}
+.pfc-card span{color:hsl(var(--ink-soft))}
+.pfc-evidence{margin:8px 0 0!important;background:transparent!important;border:0!important}
+.cgm-pfc-root .pfc-evidence summary{display:inline-flex;min-height:36px;padding:4px 0;background:transparent;color:hsl(var(--accent-ink));font-size:12.5px}
+.cgm-pfc-root .pfc-evidence>div{padding:10px 12px;border:1px solid hsl(var(--line));border-radius:8px;background:hsl(var(--surface-2)/.45)}
+.cgm-pfc-root .pfc-evidence p{margin:0;overflow-wrap:anywhere;white-space:pre-wrap;font-size:12.5px}
+.pfc-local-nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px;padding:10px 0;border-bottom:1px solid hsl(var(--line))}
+.pfc-local-nav a{display:inline-flex;align-items:center;min-height:40px;padding:7px 11px;border:1px solid hsl(var(--line));border-radius:8px;background:hsl(var(--surface));color:hsl(var(--ink-soft));font-size:12.5px;font-weight:650;text-decoration:none!important}
+.pfc-local-nav a:hover{border-color:hsl(var(--accent)/.45);color:hsl(var(--accent-ink));background:hsl(var(--accent-soft)/.5)}
+.pfc-table-scroll{min-width:0;max-width:100%}
+.pfc-table-overflow{display:none;align-items:center;justify-content:flex-end;gap:5px;margin:-8px 2px 14px;color:hsl(var(--ink-soft));font-size:12px}
+.pfc-table-overflow .dashicons{width:16px;height:16px;font-size:16px}
+.pfc-table-scroll.is-overflowing .pfc-table-overflow{display:flex}
+.cgm-pfc-root table.widefat:focus-visible{outline:3px solid hsl(var(--accent-bright)/.35);outline-offset:2px}
+
+/* Database safety and backup eligibility. */
+.cgm-pfc-root .pfc-actions form.pfc-danger-action{flex:1 1 100%;align-items:center;gap:14px;margin-top:4px;padding:14px 16px;border:1px solid hsl(var(--critical)/.22);border-radius:10px;background:hsl(var(--critical-soft)/.62)}
+.pfc-danger-action label{display:flex!important;flex:1;flex-direction:row!important;align-items:flex-start;gap:10px;min-height:44px;margin:0;color:hsl(var(--ink))!important;font-size:13px!important;line-height:1.5;cursor:pointer}
+.pfc-danger-action input[type="checkbox"],.pfc-opt-confirm input[type="checkbox"]{flex:0 0 22px;width:22px;height:22px;margin:1px 0 0!important}
+.cgm-pfc-root .pfc-button-danger{border-color:hsl(var(--critical)/.45)!important;color:hsl(var(--critical))!important;background:hsl(var(--surface))!important}
+.cgm-pfc-root .pfc-button-danger:hover{border-color:hsl(var(--critical))!important;color:#fff!important;background:hsl(var(--critical))!important}
+.pfc-backup-eligibility{display:block;margin-top:9px;padding-top:8px;border-top:1px solid hsl(var(--line));color:hsl(var(--ink-soft));font-size:12px;line-height:1.5}
+.pfc-backup-eligibility.is-eligible{color:hsl(var(--good))}
+.pfc-backup-eligibility.is-expired{color:hsl(var(--ink-soft))}
+
+/* Optimize: structured sections, usable forms and progressive disclosure. */
+.pfc-opt-section{margin:0 0 22px;scroll-margin-top:40px}
+.pfc-opt-section>h3{margin:0 0 10px;font-size:19px}
+.pfc-opt-section>p{margin:0 0 14px;max-width:75ch;color:hsl(var(--ink-soft))}
+.cgm-pfc-root details.pfc-opt-section{padding:0;border:0;background:transparent;overflow:visible}
+.cgm-pfc-root details.pfc-opt-section>summary{display:flex;align-items:center;min-height:54px;margin:0 0 12px;padding:12px 15px;border:1px solid hsl(var(--line));border-radius:10px;background:hsl(var(--surface));color:hsl(var(--ink));font-size:17px}
+.cgm-pfc-root details.pfc-opt-section>summary:before{background:hsl(var(--accent-soft));border-color:hsl(var(--accent)/.2)}
+.cgm-pfc-root details.pfc-opt-section>div{padding:0}
+.pfc-opt-panel{scroll-margin-top:32px}
+.pfc-opt-panel h3{font-size:17px}
+.pfc-opt-panel>p{max-width:75ch}
+.pfc-opt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:16px 0!important}
+.pfc-opt-grid label{display:flex;min-width:0;flex-direction:column;gap:6px;color:hsl(var(--ink-soft));font-size:12.5px;font-weight:650}
+.pfc-opt-grid .pfc-opt-check{flex-direction:row;align-items:flex-start;min-height:44px;padding:10px 12px;border:1px solid hsl(var(--line));border-radius:8px;background:hsl(var(--surface-2)/.35)}
+.pfc-opt-check input{flex:0 0 20px;width:20px;height:20px;margin:0!important}
+.pfc-opt-form{margin:14px 0 0}
+.pfc-opt-form>.button{margin-top:4px}
+.cgm-pfc-root .pfc-opt-confirm{display:flex;flex-direction:row;align-items:flex-start;gap:10px;max-width:70ch;min-height:44px;margin:12px 0;padding:10px 12px;border:1px solid hsl(var(--line));border-radius:8px;background:hsl(var(--surface-2)/.35);color:hsl(var(--ink-soft));font-size:12.5px;line-height:1.5;cursor:pointer}
+.pfc-opt-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,.45fr);gap:14px;align-items:start;margin:10px 0;padding:12px;border:1px solid hsl(var(--line));border-radius:9px;background:hsl(var(--surface-2)/.3)}
+.pfc-opt-row>.form,.pfc-opt-row>form{margin:0}
+.pfc-opt-muted,.pfc-muted{color:hsl(var(--ink-soft));font-size:13px}
+.cgm-pfc-root details.pfc-opt-fix{margin:12px 0;background:hsl(var(--surface-2)/.25)}
+.cgm-pfc-root details.pfc-opt-fix>summary{min-height:48px;background:hsl(var(--surface-2)/.45);color:hsl(var(--ink))}
+.cgm-pfc-root details.pfc-opt-fix>div{padding:16px}
+.cgm-pfc-root details.pfc-opt-fix>div>h4:first-child{margin-top:0}
+.pfc-undo-unavailable{color:hsl(var(--ink-soft));font-size:12px}
+
+/* Incident triage: four focused cards per page, with secondary actions tucked away. */
+.pfc-incident__summary h3{line-height:1.35}
+.cgm-pfc-root .pfc-incident__actions{justify-content:space-between}
+.cgm-pfc-root .pfc-incident__primary-actions{display:flex;flex-wrap:wrap;gap:10px}
+.cgm-pfc-root .pfc-incident__primary-actions form{margin:0}
+.cgm-pfc-root details.pfc-incident__manage{flex:0 0 100%;margin:0;border:0;background:transparent;overflow:visible}
+.cgm-pfc-root details.pfc-incident__manage>summary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:9px 14px;border:1px solid hsl(var(--line-strong));border-radius:8px;background:hsl(var(--surface));color:hsl(var(--ink-soft));font-size:13px}
+.cgm-pfc-root details.pfc-incident__manage>summary:before{content:none}
+.cgm-pfc-root details.pfc-incident__manage>div{position:static;width:100%;box-sizing:border-box;margin-top:10px;padding:14px;border:1px solid hsl(var(--line));border-radius:10px;background:hsl(var(--surface))}
+.pfc-incident__manage form{display:grid!important;gap:9px!important}
+.pfc-incident__manage .button,.pfc-incident__manage .button-link{width:100%;margin:0!important}
+.pfc-incident-pagination{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:12px;margin:20px 0 4px}
+.pfc-incident-pagination[hidden]{display:none}
+.pfc-incident-pagination span{min-width:220px;text-align:center;color:hsl(var(--ink-soft));font-size:12.5px;font-variant-numeric:tabular-nums}
+
+/* Cache workflow and status summary. */
+.pfc-cache-status{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0}
+.pfc-cache-status div{padding:11px 12px;border:1px solid hsl(var(--line));border-radius:8px;background:hsl(var(--surface-2)/.4)}
+.pfc-cache-status dt{color:hsl(var(--ink-soft));font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.pfc-cache-status dd{margin:4px 0 0;color:hsl(var(--ink));font-size:14px;font-weight:700;overflow-wrap:anywhere}
+.cgm-pfc-root .pfc-cache-diagnostics-form{display:grid;gap:10px;margin:12px 0}
+.pfc-cache-diagnostics-form .pfc-opt-confirm{margin:0}
+.cgm-pfc-root details.pfc-advanced-diagnostics{margin:18px 0}
+.cgm-pfc-root details.pfc-advanced-diagnostics>summary{padding:14px 16px;color:hsl(var(--ink));font-size:16px}
+.cgm-pfc-root details.pfc-advanced-diagnostics>div{padding:0}
+.cgm-pfc-root details.pfc-advanced-diagnostics>div>.pfc-box{margin:14px}
+
+@media(max-width:900px){.pfc-cache-status{grid-template-columns:repeat(2,minmax(0,1fr))}.pfc-opt-row{grid-template-columns:1fr}}
+@media(max-width:782px){
+  .cgm-pfc-root{font-size:15px}
+  .cgm-pfc-root p{font-size:15px}
+  .cgm-pfc-root .description{font-size:13px!important}
+  .cgm-pfc-root .button{font-size:14px!important}
+  .cgm-pfc-root input[type="text"],.cgm-pfc-root input[type="search"],.cgm-pfc-root input[type="url"],.cgm-pfc-root input[type="number"],.cgm-pfc-root input[type="email"],.cgm-pfc-root select,.cgm-pfc-root textarea{font-size:16px!important}
+  .pfc-suite-nav{scroll-padding-inline:12px}
+  .pfc-suite-nav a{min-height:48px;font-size:14px}
+  .cgm-pfc-root table.widefat tbody td{font-size:14px}
+  .cgm-pfc-root table.pfc-responsive-table{min-width:0;width:100%;max-width:100%;overflow:visible}
+  .cgm-pfc-root table.pfc-responsive-table thead{min-width:0}
+  .cgm-pfc-root table.pfc-responsive-table tbody{min-width:0;width:100%}
+  .cgm-pfc-root table.pfc-responsive-table tr,.cgm-pfc-root table.pfc-responsive-table td{min-width:0}
+  .cgm-pfc-root table.pfc-responsive-table td{overflow-wrap:anywhere}
+  .cgm-pfc-root table.pfc-responsive-table td:before{color:hsl(var(--ink-soft));font-size:12px}
+  .pfc-priority-item,.pfc-priority-item__impact{min-width:0}
+  .pfc-priority-item__impact{white-space:normal;overflow-wrap:anywhere}
+  .pfc-table-overflow{min-height:28px;margin-top:-4px}
+  .cgm-pfc-root .pfc-actions form.pfc-danger-action{align-items:stretch;flex-direction:column;padding:14px}
+  .pfc-danger-action .button{width:100%}
+  .pfc-opt-grid{grid-template-columns:1fr}
+  .cgm-pfc-root details.pfc-opt-fix>div{padding:13px}
+  .cgm-pfc-root .pfc-incident__actions{position:relative;align-items:stretch}
+  .cgm-pfc-root .pfc-incident__primary-actions{flex-direction:column;align-items:stretch;width:100%}
+  .cgm-pfc-root .pfc-incident__primary-actions .button{width:100%}
+  .cgm-pfc-root details.pfc-incident__manage{width:100%}
+  .cgm-pfc-root details.pfc-incident__manage>summary{width:100%}
+  .cgm-pfc-root details.pfc-incident__manage>div{position:static;width:100%;margin-top:10px;box-shadow:none}
+  .pfc-incident-pagination{align-items:stretch}
+  .pfc-incident-pagination span{order:-1;flex:1 1 100%;min-width:0}
+  .pfc-incident-pagination .button{flex:1}
+  .pfc-local-nav{flex-wrap:nowrap;overflow-x:auto;padding-bottom:12px}
+  .pfc-local-nav a{flex:0 0 auto;min-height:44px}
+  .cgm-pfc-root .pfc-cache-diagnostics-form .button{width:100%}
+}
+@media(max-width:480px){
+  .pfc-cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .pfc-card{min-height:104px;padding:14px}
+  .pfc-card span{margin-bottom:10px;font-size:11.5px;line-height:1.35}
+  .pfc-card strong{font-size:27px}
+  .pfc-card:last-child:nth-child(odd){grid-column:1/-1;min-height:88px}
+  .pfc-cache-status{grid-template-columns:1fr}
+}

@@ -4,7 +4,7 @@ Tags: performance, database, query, profiler, diagnostics, slow queries
 Requires at least: 6.4
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 3.2.0
+Stable tag: 3.2.1
 License: GPLv2 or later
 
 Production-oriented WordPress diagnostics and remediation with database integrity/schema checks, slow-query attribution, plugin fault analysis, cron/cache/server inspection, RUM and production safety gates.
@@ -29,6 +29,13 @@ Deep signed route profiles provide normalized query fingerprints, duplicate/N+1 
 6. Create and verify a Performance Console database backup before schema/index/repair operations. Large maintenance operations can be run from the guided wp-admin workflow or WP-CLI; CLI remains preferable for the largest tables.
 
 == Changelog ==
+
+= 3.2.1 =
+* Refine all eight admin views with clearer workflows, concise evidence disclosures, local navigation, and more accurate remediation guidance.
+* Improve mobile layouts, responsive tables, active-tab scrolling, touch targets, form readability, focus states, and supporting-text contrast.
+* Add four-per-page incident pagination with severity/search filtering, a no-results state, and inline incident management without clipping.
+* Reorganize Optimize and Cache diagnostics, clarify reversible versus recorded-only changes, and improve Database destructive-action and backup controls.
+* Fix an Optimize restart-form PHP deprecation. No database-schema or MU-bootstrap changes.
 
 = 3.2.0 =
 * Optimization suite: a change-impact ledger that compares traffic before and after each recorded change, field attribution for LCP elements / INP targets / long tasks, an asset and priority-hint ledger, performance budgets with a CI gate, a bootstrap waterfall and a cacheability advisor.
